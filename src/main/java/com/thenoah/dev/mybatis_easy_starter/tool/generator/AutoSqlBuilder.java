@@ -16,14 +16,14 @@ import java.util.List;
 
 /**
  * MyBatis 가상 XML에 주입될 CRUD SQL을 생성하는 빌더 클래스입니다.
- * DTO 사용 시에도 값이 존재하는 필드만 동적으로 처리하도록 <if>문을 활용합니다.
+ * VO의 어노테이션 설정을 분석하여 Soft/Hard Delete를 자동으로 결정합니다.
  */
 public class AutoSqlBuilder {
   private static final Logger log = LoggerFactory.getLogger(AutoSqlBuilder.class);
 
   public static String build(Class<?> entityClass, String userContent) {
     try {
-      // 1. 테이블명 결정 (@Table 어노테이션 우선, 없으면 클래스명 기반 유추)
+      // 1. 테이블명 결정 (@Table 어노테이션 우선)
       String tableName = entityClass.isAnnotationPresent(Table.class)
               ? entityClass.getAnnotation(Table.class).name()
               : camelToSnake(entityClass.getSimpleName().replace("VO", "").replace("Dto", ""));
@@ -48,15 +48,16 @@ public class AutoSqlBuilder {
         }
       }
 
-      // PK 정보 확정 (없으면 기본값 id)
-      String pkField = (pkFieldObj != null) ? pkFieldObj.getName() : "id";
+      // PK 정보 확정 (DB 컬럼명 추출)
       String pkColumn = (pkFieldObj != null) ? ColumnAnalyzer.getColumnName(pkFieldObj) : "id";
+      // 바인딩 이름은 BaseMapper의 @Param("id")와 일치시키기 위해 "id"로 고정
+      String bindId = "id";
 
       StringBuilder sql = new StringBuilder(2048);
 
-      // [INSERT] - <trim>과 <if>를 사용하여 DTO에 있는 필드만 선택적 삽입
+      // [INSERT] - DTO 필드 기반 동적 삽입
       if (!userContent.contains("id=\"insert\"")) {
-        sql.append("  <insert id=\"insert\" useGeneratedKeys=\"true\" keyProperty=\"").append(pkField).append("\">\n")
+        sql.append("  <insert id=\"insert\" useGeneratedKeys=\"true\" keyProperty=\"").append(pkFieldObj != null ? pkFieldObj.getName() : "id").append("\">\n")
                 .append("    INSERT INTO ").append(tableName).append("\n")
                 .append("    <trim prefix=\"(\" suffix=\")\" suffixOverrides=\",\">\n");
 
@@ -80,11 +81,11 @@ public class AutoSqlBuilder {
       if (!userContent.contains("id=\"findById\"")) {
         sql.append("  <select id=\"findById\" resultType=\"").append(resultTypeName).append("\">\n")
                 .append("    SELECT * FROM ").append(tableName)
-                .append(" WHERE ").append(pkColumn).append(" = #{").append(pkField).append("}\n")
+                .append(" WHERE ").append(pkColumn).append(" = #{").append(bindId).append("}\n")
                 .append("  </select>\n");
       }
 
-      // [findAll] - SoftDelete 반영
+      // [findAll] - SoftDelete 적용 시 삭제되지 않은 데이터만 조회
       if (!userContent.contains("id=\"findAll\"")) {
         sql.append("  <select id=\"findAll\" resultType=\"").append(resultTypeName).append("\">\n")
                 .append("    SELECT * FROM ").append(tableName).append("\n");
@@ -98,20 +99,20 @@ public class AutoSqlBuilder {
                   (ft.equals(String.class) && "true".equalsIgnoreCase(sd.deletedValue()))) {
             sql.append("    WHERE (").append(sdCol).append(" IS NULL OR ").append(sdCol).append(" = '')\n");
           } else {
-            sql.append("    WHERE ").append(sdCol).append(" = ").append(sd.notDeletedValue()).append("\n");
+            sql.append("    WHERE ").append(sdCol).append(" = '").append(sd.notDeletedValue()).append("'\n");
           }
         }
         sql.append("  </select>\n");
       }
 
-      // [UPDATE] - <set>과 <if>를 활용하여 DTO의 부분 수정(Partial Update) 지원
+      // [UPDATE] - DTO 기반 부분 수정 지원
       if (!userContent.contains("id=\"update\"")) {
         sql.append("  <update id=\"update\">\n")
                 .append("    UPDATE ").append(tableName).append("\n")
                 .append("    <set>\n");
 
         for (Field f : fields) {
-          if (f.equals(pkFieldObj)) continue; // PK는 수정 제외
+          if (f.equals(pkFieldObj)) continue; // PK 수정 제외
           String fieldName = f.getName();
           String columnName = ColumnAnalyzer.getColumnName(f);
           sql.append("      <if test=\"").append(fieldName).append(" != null\">")
@@ -119,38 +120,36 @@ public class AutoSqlBuilder {
         }
 
         sql.append("    </set>\n")
-                .append("    WHERE ").append(pkColumn).append(" = #{").append(pkField).append("}\n")
+                .append("    WHERE ").append(pkColumn).append(" = #{").append(pkFieldObj != null ? pkFieldObj.getName() : "id").append("}\n")
                 .append("  </update>\n");
       }
 
-      // [deleteById] - SoftDelete & CascadeDelete 통합 처리
+      // [deleteById] - SoftDelete & CascadeDelete 통합 분기 로직
       if (!userContent.contains("id=\"deleteById\"")) {
         String tag = (softDeleteField != null) ? "update" : "delete";
         sql.append("  <").append(tag).append(" id=\"deleteById\">\n");
 
-        // Cascade Delete 처리 (연관 테이블 먼저 삭제)
+        // Cascade Delete 처리
         for (CascadeDelete cd : cascadeDeletes) {
           sql.append("    DELETE FROM ").append(cd.table())
-                  .append(" WHERE ").append(cd.foreignKey()).append(" = #{").append(pkField).append("};\n");
+                  .append(" WHERE ").append(cd.foreignKey()).append(" = #{").append(bindId).append("};\n");
         }
 
         if (softDeleteField != null) {
-          // Soft Delete 처리
           String sdCol = ColumnAnalyzer.getColumnName(softDeleteField);
           SoftDelete sd = softDeleteField.getAnnotation(SoftDelete.class);
           Class<?> ft = softDeleteField.getType();
 
+          // 삭제 값 결정
           String updateVal = (ft.equals(LocalDateTime.class) || ft.equals(Date.class)) ? "NOW()" :
-                  (ft.equals(String.class) && "true".equalsIgnoreCase(sd.deletedValue())) ? "DATE_FORMAT(NOW(), '%Y%m%d%H%i%s')" :
-                          sd.deletedValue();
+                  "'" + sd.deletedValue() + "'";
 
           sql.append("    UPDATE ").append(tableName)
                   .append(" SET ").append(sdCol).append(" = ").append(updateVal)
-                  .append(" WHERE ").append(pkColumn).append(" = #{").append(pkField).append("}\n");
+                  .append(" WHERE ").append(pkColumn).append(" = #{").append(bindId).append("}\n");
         } else {
-          // Hard Delete 처리
           sql.append("    DELETE FROM ").append(tableName)
-                  .append(" WHERE ").append(pkColumn).append(" = #{").append(pkField).append("}\n");
+                  .append(" WHERE ").append(pkColumn).append(" = #{").append(bindId).append("}\n");
         }
         sql.append("  </").append(tag).append(">\n");
       }
