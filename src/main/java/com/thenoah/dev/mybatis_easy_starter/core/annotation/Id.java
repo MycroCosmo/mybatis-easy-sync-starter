@@ -1,4 +1,4 @@
-package com.thenoah.dev.mybatis_easy_starter.core;
+package com.thenoah.dev.mybatis_easy_starter.core.annotation;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

@@ -1,6 +1,7 @@
 package com.thenoah.dev.mybatis_easy_starter.config;
 
-import com.thenoah.dev.mybatis_easy_starter.core.*;
+import com.thenoah.dev.mybatis_easy_starter.tool.generator.AutoSqlBuilder;
+import com.thenoah.dev.mybatis_easy_starter.tool.generator.EntityGenerator;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.mybatis.spring.SqlSessionFactoryBean;
 import org.slf4j.Logger;
@@ -19,21 +20,16 @@ import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 
 import javax.sql.DataSource;
-import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Pattern;
 
 @Configuration
 @ConditionalOnClass({SqlSessionFactory.class, SqlSessionFactoryBean.class})
 public class MybatisEasyAutoConfiguration {
     private static final Logger log = LoggerFactory.getLogger(MybatisEasyAutoConfiguration.class);
-
-    private static final Pattern CAMEL_CASE_PATTERN = Pattern.compile("([a-z])([A-Z])");
-    private static final String CAMEL_CASE_REPLACEMENT = "$1_$2";
 
     @Autowired
     private BeanFactory beanFactory;
@@ -41,19 +37,12 @@ public class MybatisEasyAutoConfiguration {
     @Value("${mybatis-easy.generator.use-db-folder:true}")
     private boolean useDbFolder;
 
-    /**
-     * EntityGenerator 빈 설정.
-     * [수정] enabled가 true인 사람(리더)의 환경에서만 동작하도록 원복했습니다.
-     * 팀원(false)들은 이 빈 자체가 로드되지 않아 메모리와 구동 속도 면에서 이득을 봅니다.
-     */
     @Bean
     @ConditionalOnProperty(prefix = "mybatis-easy.generator", name = "enabled", havingValue = "true")
     public EntityGenerator entityGenerator(DataSource dataSource) {
         EntityGenerator generator = new EntityGenerator();
         List<String> packages = AutoConfigurationPackages.get(beanFactory);
         String basePackage = packages.isEmpty() ? "" : packages.get(0).toLowerCase() + ".vo";
-
-        // 검증 로직 없이 바로 생성/동기화만 수행합니다.
         generator.generate(dataSource, basePackage, useDbFolder);
         return generator;
     }
@@ -61,7 +50,7 @@ public class MybatisEasyAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     SqlSessionFactory sqlSessionFactory(DataSource dataSource) throws Exception {
-        log.info("MyBatis-Easy: Starting Auto Configuration...");
+        log.info("MyBatis-Easy: Starting Auto Configuration with Externalized SQL Builder...");
 
         SqlSessionFactoryBean factoryBean = new SqlSessionFactoryBean();
         factoryBean.setDataSource(dataSource);
@@ -93,6 +82,7 @@ public class MybatisEasyAutoConfiguration {
                 byte[] bytes = res.getInputStream().readAllBytes();
                 String userContent = new String(bytes, StandardCharsets.UTF_8).trim();
 
+                // XML 태그 청소
                 if (!userContent.isEmpty()) {
                     userContent = userContent.replaceAll("(?s)<mapper.*?>", "")
                             .replaceAll("</mapper>", "")
@@ -103,7 +93,8 @@ public class MybatisEasyAutoConfiguration {
                 String autoSql = "";
                 try {
                     Class<?> mapperClass = Class.forName(namespace);
-                    autoSql = generateCrudSql(mapperClass, userContent);
+                    // [변경 포인트] 외부 분리된 빌더를 호출하도록 수정
+                    autoSql = generateAutoSql(mapperClass, userContent);
                 } catch (ClassNotFoundException e) {
                     log.debug("MyBatis-Easy: Mapper interface not found for [{}]", namespace);
                 }
@@ -134,81 +125,24 @@ public class MybatisEasyAutoConfiguration {
         return factoryBean.getObject();
     }
 
-    private String generateCrudSql(Class<?> mapperClass, String userContent) {
-        if (!BaseMapper.class.isAssignableFrom(mapperClass) || mapperClass.getGenericInterfaces().length == 0) {
+    /**
+     * 매퍼가 BaseMapper를 상속받았는지 확인하고, SQL 빌더를 통해 CRUD를 생성합니다.
+     */
+    private String generateAutoSql(Class<?> mapperClass, String userContent) {
+        if (!com.thenoah.dev.mybatis_easy_starter.core.mapper.BaseMapper.class.isAssignableFrom(mapperClass)
+                || mapperClass.getGenericInterfaces().length == 0) {
             return "";
         }
+
         try {
             Type[] interfaces = mapperClass.getGenericInterfaces();
             ParameterizedType type = (ParameterizedType) interfaces[0];
             Class<?> entityClass = (Class<?>) type.getActualTypeArguments()[0];
 
-            String tableName = entityClass.isAnnotationPresent(Table.class)
-                    ? entityClass.getAnnotation(Table.class).name()
-                    : entityClass.getSimpleName().toLowerCase();
-
-            String resultTypeName = entityClass.getName();
-            Field[] fields = entityClass.getDeclaredFields();
-
-            String pkColumn = "id", pkField = "id";
-            List<String> columns = new ArrayList<>();
-            List<String> params = new ArrayList<>();
-
-            for (Field field : fields) {
-                String fieldName = field.getName();
-                String columnName = CAMEL_CASE_PATTERN.matcher(fieldName).replaceAll(CAMEL_CASE_REPLACEMENT).toLowerCase();
-                if (field.isAnnotationPresent(Id.class)) {
-                    pkColumn = columnName; pkField = fieldName;
-                    continue;
-                }
-                columns.add(columnName);
-                params.add("#{" + fieldName + "}");
-            }
-
-            StringBuilder sql = new StringBuilder(1024);
-            // CRUD 생성 (Insert, findById, findAll, Update, Delete 동일)
-            if (!userContent.contains("id=\"insert\"")) {
-                sql.append("  <insert id=\"insert\" useGeneratedKeys=\"true\" keyProperty=\"").append(pkField).append("\">\n")
-                        .append("    INSERT INTO ").append(tableName)
-                        .append(" (").append(String.join(", ", columns)).append(") \n")
-                        .append("    VALUES (").append(String.join(", ", params)).append(")\n")
-                        .append("  </insert>\n");
-            }
-            if (!userContent.contains("id=\"findById\"")) {
-                sql.append("  <select id=\"findById\" resultType=\"").append(resultTypeName).append("\">\n")
-                        .append("    SELECT * FROM ").append(tableName)
-                        .append(" WHERE ").append(pkColumn).append(" = #{").append(pkField).append("}\n")
-                        .append("  </select>\n");
-            }
-            if (!userContent.contains("id=\"findAll\"")) {
-                sql.append("  <select id=\"findAll\" resultType=\"").append(resultTypeName).append("\">\n")
-                        .append("    SELECT * FROM ").append(tableName).append("\n")
-                        .append("  </select>\n");
-            }
-            if (!userContent.contains("id=\"update\"")) {
-                sql.append("  <update id=\"update\">\n")
-                        .append("    UPDATE ").append(tableName).append("\n")
-                        .append("    <set>\n");
-                for (Field field : fields) {
-                    if (!field.isAnnotationPresent(Id.class)) {
-                        String fieldName = field.getName();
-                        String columnName = CAMEL_CASE_PATTERN.matcher(fieldName).replaceAll(CAMEL_CASE_REPLACEMENT).toLowerCase();
-                        sql.append("      <if test=\"").append(fieldName).append(" != null\">")
-                                .append(columnName).append(" = #{").append(fieldName).append("}, </if>\n");
-                    }
-                }
-                sql.append("    </set>\n")
-                        .append("    WHERE ").append(pkColumn).append(" = #{").append(pkField).append("}\n")
-                        .append("  </update>\n");
-            }
-            if (!userContent.contains("id=\"deleteById\"")) {
-                sql.append("  <delete id=\"deleteById\">\n")
-                        .append("    DELETE FROM ").append(tableName)
-                        .append(" WHERE ").append(pkColumn).append(" = #{").append(pkField).append("}\n")
-                        .append("  </delete>\n");
-            }
-            return sql.toString();
+            // AutoSqlBuilder를 호출
+            return AutoSqlBuilder.build(entityClass, userContent);
         } catch (Exception e) {
+            log.error("MyBatis-Easy: CRUD generation failed for {}", mapperClass.getName(), e);
             return "";
         }
     }

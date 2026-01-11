@@ -1,4 +1,4 @@
-package com.thenoah.dev.mybatis_easy_starter.core;
+package com.thenoah.dev.mybatis_easy_starter.core.mapper;
 
 import java.util.List;
 import java.util.Optional;

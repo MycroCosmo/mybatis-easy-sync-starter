@@ -1,10 +1,14 @@
-package com.thenoah.dev.mybatis_easy_starter.core;
+package com.thenoah.dev.mybatis_easy_starter.tool.generator;
 
+import com.thenoah.dev.mybatis_easy_starter.support.ColumnAnalyzer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 import javax.sql.DataSource;
 import java.io.File;
+import java.lang.reflect.Field;
 import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.sql.*;
 import java.util.*;
 import java.util.regex.Matcher;
@@ -14,12 +18,11 @@ import java.util.stream.Collectors;
 public class EntityGenerator {
     private static final Logger log = LoggerFactory.getLogger(EntityGenerator.class);
 
-    // 필드 추출용 패턴: [1] 타입명, [2] 변수명
+    // 필드 추출용 패턴 (기존 파일 텍스트 분석용)
     private static final Pattern FIELD_PATTERN = Pattern.compile("private\\s+([\\w\\.<>]+)\\s+(\\w+);");
 
     /**
-     * 실행 시 바로 생성 및 동기화 로직을 수행합니다.
-     * (AutoConfiguration에서 @ConditionalOnProperty로 필터링되어 호출되므로 enabled 파라미터가 불필요해집니다.)
+     * DB의 모든 테이블을 스캔하여 VO 및 XML 매퍼를 생성하거나 동기화합니다.
      */
     public void generate(DataSource dataSource, String basePackage, boolean useDbFolder) {
         try (Connection conn = dataSource.getConnection()) {
@@ -36,20 +39,32 @@ public class EntityGenerator {
             File voDirectory = new File(voPath);
             File xmlDirectory = new File(xmlPath);
 
-            if (!voDirectory.exists()) voDirectory.mkdirs();
-            if (!xmlDirectory.exists()) xmlDirectory.mkdirs();
+            // Path API를 사용하여 디렉토리 생성 및 IOException 명시적 처리 (경고 해결)
+            try {
+                if (!Files.exists(Paths.get(voPath))) {
+                    Files.createDirectories(Paths.get(voPath));
+                }
+                if (!Files.exists(Paths.get(xmlPath))) {
+                    Files.createDirectories(Paths.get(xmlPath));
+                }
+            } catch (java.io.IOException e) {
+                log.error("MyBatis-Easy: Failed to create directories", e);
+                return;
+            }
 
+            // 모든 테이블을 대상으로 스캔
             ResultSet tables = meta.getTables(null, null, null, new String[]{"TABLE"});
             while (tables.next()) {
                 String tableName = tables.getString("TABLE_NAME");
                 String className = convertToPascalCase(tableName);
 
                 File javaFile = new File(voDirectory, className + ".java");
+
                 if (!javaFile.exists()) {
                     createFullClass(meta, tableName, className, basePackage, javaFile);
                 } else {
-                    // 주석 알림 및 신규 필드 추가 로직
-                    updateExistingClass(meta, tableName, javaFile);
+                    // 상속 구조(Reflection)를 고려하여 신규 필드만 지능적으로 추가
+                    updateExistingClass(meta, tableName, className, basePackage, javaFile);
                 }
 
                 String mapperName = className + "Mapper";
@@ -58,19 +73,17 @@ public class EntityGenerator {
                     createDefaultXml(basePackage, mapperName, xmlFile);
                 }
             }
-            log.info("MyBatis-Easy: Generation and sync completed.");
+            log.info("MyBatis-Easy: Full Generation and sync completed.");
         } catch (Exception e) {
             log.error("MyBatis-Easy: Generation failed", e);
         }
     }
 
-    // [제거됨] validateSchema 메서드 - 더 이상 구동 시 정합성 체크 로그를 남기지 않음
-
     private void createFullClass(DatabaseMetaData meta, String tableName, String className, String basePackage, File file) throws Exception {
         String aliasName = className.substring(0, 1).toLowerCase() + className.substring(1);
         StringBuilder sb = new StringBuilder();
         sb.append("package ").append(basePackage).append(";\n\n")
-                .append("import com.thenoah.dev.mybatis_easy_starter.core.*;\n")
+                .append("import com.thenoah.dev.mybatis_easy_starter.core.annotation.*;\n")
                 .append("import org.apache.ibatis.type.Alias;\n")
                 .append("import lombok.Data;\n")
                 .append("import java.time.LocalDateTime;\n\n")
@@ -92,12 +105,26 @@ public class EntityGenerator {
         log.info("MyBatis-Easy: Created [{}.java]", className);
     }
 
-    private void updateExistingClass(DatabaseMetaData meta, String tableName, File file) throws Exception {
+    private void updateExistingClass(DatabaseMetaData meta, String tableName, String className, String basePackage, File file) throws Exception {
         String content = Files.readString(file.toPath());
-        Map<String, String> fieldMap = new HashMap<>();
+
+        // 1. 현재 파일에 물리적으로 작성된 필드 수집
+        Map<String, String> localFieldMap = new HashMap<>();
         Matcher fieldMatcher = FIELD_PATTERN.matcher(content);
         while (fieldMatcher.find()) {
-            fieldMap.put(fieldMatcher.group(2), fieldMatcher.group(1));
+            localFieldMap.put(fieldMatcher.group(2), fieldMatcher.group(1));
+        }
+
+        // 2. ColumnAnalyzer를 통해 부모(BaseEntity 등) 포함 전체 필드 수집
+        Set<String> allFieldNames = new HashSet<>();
+        try {
+            Class<?> clazz = Class.forName(basePackage + "." + className);
+            List<Field> allFields = ColumnAnalyzer.getAllFields(clazz);
+            for (Field f : allFields) {
+                allFieldNames.add(f.getName());
+            }
+        } catch (ClassNotFoundException e) {
+            allFieldNames.addAll(localFieldMap.keySet());
         }
 
         StringBuilder newFields = new StringBuilder();
@@ -109,14 +136,15 @@ public class EntityGenerator {
             String fieldName = convertToCamelCase(colName);
             String dbJavaType = fieldName.equalsIgnoreCase("id") ? "Long" : mapSqlTypeToJavaType(cols.getInt("DATA_TYPE"));
 
-            if (!fieldMap.containsKey(fieldName)) {
+            // 부모 클래스나 현재 클래스 어디에도 없는 DB 컬럼만 새로 추가
+            if (!allFieldNames.contains(fieldName)) {
                 newFields.append("\n    private ").append(dbJavaType).append(" ").append(fieldName).append(";")
                         .append(" // Added from DB column '").append(colName).append("'\n");
                 isChanged = true;
-            } else {
-                String existingType = fieldMap.get(fieldName);
+            } else if (localFieldMap.containsKey(fieldName)) {
+                // 현재 클래스에 직접 선언된 필드만 타입 정합성 체크
+                String existingType = localFieldMap.get(fieldName);
                 if (!existingType.equals(dbJavaType)) {
-                    // 리더의 로컬에서 주석을 생성하고, 이 파일이 Git에 Push되어 팀원들에게 전달됨
                     String warningMsg = "// [Type Warning] DB type is " + dbJavaType + " (Current: " + existingType + ")";
                     if (!content.contains(warningMsg)) {
                         String targetLine = "private " + existingType + " " + fieldName + ";";
