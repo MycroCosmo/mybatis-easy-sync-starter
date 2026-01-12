@@ -31,6 +31,7 @@ dependencies {
     
     // 빌드 시 최종 Jar 파일에는 포함되지 않음
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testRuntimeOnly 'org.postgresql:postgresql' // 테스트 시에만 DB 드라이버 사용
 }
 
@@ -48,12 +49,15 @@ publishing {
 }
 
 // 8. 빌드 설정: 실행 가능한 bootJar가 아닌 일반 jar로 생성
+// build.gradle 하단 수정
+
 bootJar {
     enabled = false
 }
 
 jar {
     enabled = true
+    archiveClassifier = '' // 이 설정을 넣어야 이름 뒤에 '-plain'이 붙지 않습니다!
 }
 
 tasks.named('test') {

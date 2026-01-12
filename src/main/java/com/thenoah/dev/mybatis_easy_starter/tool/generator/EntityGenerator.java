@@ -36,10 +36,6 @@ public class EntityGenerator {
                 xmlPath += "/" + dbName;
             }
 
-            File voDirectory = new File(voPath);
-            File xmlDirectory = new File(xmlPath);
-
-            // Path API를 사용하여 디렉토리 생성 및 IOException 명시적 처리 (경고 해결)
             try {
                 if (!Files.exists(Paths.get(voPath))) {
                     Files.createDirectories(Paths.get(voPath));
@@ -52,23 +48,22 @@ public class EntityGenerator {
                 return;
             }
 
-            // 모든 테이블을 대상으로 스캔
             ResultSet tables = meta.getTables(null, null, null, new String[]{"TABLE"});
             while (tables.next()) {
                 String tableName = tables.getString("TABLE_NAME");
                 String className = convertToPascalCase(tableName);
 
-                File javaFile = new File(voDirectory, className + ".java");
+                File javaFile = new File(voPath, className + ".java");
 
                 if (!javaFile.exists()) {
                     createFullClass(meta, tableName, className, basePackage, javaFile);
                 } else {
-                    // 상속 구조(Reflection)를 고려하여 신규 필드만 지능적으로 추가
+                    // 타입 변경 체크 + 신규 필드 추가 + 삭제된 필드 주석화 로직 통합 호출
                     updateExistingClass(meta, tableName, className, basePackage, javaFile);
                 }
 
                 String mapperName = className + "Mapper";
-                File xmlFile = new File(xmlDirectory, mapperName + ".xml");
+                File xmlFile = new File(xmlPath, mapperName + ".xml");
                 if (!xmlFile.exists()) {
                     createDefaultXml(basePackage, mapperName, xmlFile);
                 }
@@ -108,47 +103,72 @@ public class EntityGenerator {
     private void updateExistingClass(DatabaseMetaData meta, String tableName, String className, String basePackage, File file) throws Exception {
         String content = Files.readString(file.toPath());
 
-        // 1. 현재 파일에 물리적으로 작성된 필드 수집
+        // 1. 현재 파일의 필드 분석 (필드명 -> 타입)
         Map<String, String> localFieldMap = new HashMap<>();
         Matcher fieldMatcher = FIELD_PATTERN.matcher(content);
         while (fieldMatcher.find()) {
             localFieldMap.put(fieldMatcher.group(2), fieldMatcher.group(1));
         }
 
-        // 2. ColumnAnalyzer를 통해 부모(BaseEntity 등) 포함 전체 필드 수집
-        Set<String> allFieldNames = new HashSet<>();
-        try {
-            Class<?> clazz = Class.forName(basePackage + "." + className);
-            List<Field> allFields = ColumnAnalyzer.getAllFields(clazz);
-            for (Field f : allFields) {
-                allFieldNames.add(f.getName());
-            }
-        } catch (ClassNotFoundException e) {
-            allFieldNames.addAll(localFieldMap.keySet());
-        }
-
-        StringBuilder newFields = new StringBuilder();
+        // 2. DB 최신 메타데이터 수집
+        Set<String> dbFieldNames = new HashSet<>();
+        Map<String, String> dbFieldTypes = new HashMap<>();
         ResultSet cols = meta.getColumns(null, null, tableName, null);
-        boolean isChanged = false;
-
         while (cols.next()) {
             String colName = cols.getString("COLUMN_NAME");
             String fieldName = convertToCamelCase(colName);
             String dbJavaType = fieldName.equalsIgnoreCase("id") ? "Long" : mapSqlTypeToJavaType(cols.getInt("DATA_TYPE"));
+            dbFieldNames.add(fieldName);
+            dbFieldTypes.put(fieldName, dbJavaType);
+        }
 
-            // 부모 클래스나 현재 클래스 어디에도 없는 DB 컬럼만 새로 추가
-            if (!allFieldNames.contains(fieldName)) {
-                newFields.append("\n    private ").append(dbJavaType).append(" ").append(fieldName).append(";")
-                        .append(" // Added from DB column '").append(colName).append("'\n");
+        boolean isChanged = false;
+
+        // 3. 삭제된 필드 감지 (VO에는 있는데 DB에는 없는 경우 주석 추가)
+        for (Map.Entry<String, String> entry : localFieldMap.entrySet()) {
+            String fieldName = entry.getKey();
+            String fieldType = entry.getValue();
+
+            if (!dbFieldNames.contains(fieldName)) {
+                String warningMsg = "// [DELETED FROM DB] Column '" + camelToSnake(fieldName) + "' no longer exists in table";
+                String targetLine = "private " + fieldType + " " + fieldName + ";";
+                
+                // 이미 주석이 달려있지 않은 경우에만 추가
+                if (!content.contains(warningMsg)) {
+                    content = content.replace(targetLine, warningMsg + "\n    " + targetLine);
+                    isChanged = true;
+                    log.warn("MyBatis-Easy: Field [{}] in [{}] marked as DELETED because it's missing in DB.", fieldName, className);
+                }
+            }
+        }
+
+        // 4. 타입 변경 체크 및 신규 필드 추가 준비
+        StringBuilder newFields = new StringBuilder();
+        Set<String> allFieldNamesInClass = new HashSet<>();
+        try {
+            // 상속 구조 포함 전체 필드 확인
+            Class<?> clazz = Class.forName(basePackage + "." + className);
+            allFieldNamesInClass = ColumnAnalyzer.getAllFields(clazz).stream().map(Field::getName).collect(Collectors.toSet());
+        } catch (ClassNotFoundException e) {
+            allFieldNamesInClass.addAll(localFieldMap.keySet());
+        }
+
+        for (String dbFieldName : dbFieldNames) {
+            String dbJavaType = dbFieldTypes.get(dbFieldName);
+
+            if (!allFieldNamesInClass.contains(dbFieldName)) {
+                // 신규 필드 추가
+                newFields.append("\n    private ").append(dbJavaType).append(" ").append(dbFieldName).append(";")
+                        .append(" // Added from DB column\n");
                 isChanged = true;
-            } else if (localFieldMap.containsKey(fieldName)) {
-                // 현재 클래스에 직접 선언된 필드만 타입 정합성 체크
-                String existingType = localFieldMap.get(fieldName);
+            } else if (localFieldMap.containsKey(dbFieldName)) {
+                // 기존 필드 타입 정합성 체크
+                String existingType = localFieldMap.get(dbFieldName);
                 if (!existingType.equals(dbJavaType)) {
-                    String warningMsg = "// [Type Warning] DB type is " + dbJavaType + " (Current: " + existingType + ")";
-                    if (!content.contains(warningMsg)) {
-                        String targetLine = "private " + existingType + " " + fieldName + ";";
-                        content = content.replace(targetLine, warningMsg + "\n    " + targetLine);
+                    String typeWarning = "// [Type Mismatch] DB type: " + dbJavaType + " (Current: " + existingType + ")";
+                    String targetLine = "private " + existingType + " " + dbFieldName + ";";
+                    if (!content.contains(typeWarning)) {
+                        content = content.replace(targetLine, typeWarning + "\n    " + targetLine);
                         isChanged = true;
                     }
                 }
@@ -159,7 +179,7 @@ public class EntityGenerator {
             int lastBrace = content.lastIndexOf("}");
             String updated = content.substring(0, lastBrace) + newFields.toString() + "}\n";
             Files.writeString(file.toPath(), updated);
-            log.info("MyBatis-Easy: Synced fields in [{}]", file.getName());
+            log.info("MyBatis-Easy: Synced [{}.java] (Added/TypeCheck/DeletedCheck)", className);
         }
     }
 
@@ -198,5 +218,9 @@ public class EntityGenerator {
     private String convertToCamelCase(String s) {
         String p = convertToPascalCase(s);
         return (p == null || p.isEmpty()) ? p : p.substring(0, 1).toLowerCase() + p.substring(1);
+    }
+
+    private String camelToSnake(String str) {
+        return str.replaceAll("([a-z])([A-Z]+)", "$1_$2").toLowerCase();
     }
 }
