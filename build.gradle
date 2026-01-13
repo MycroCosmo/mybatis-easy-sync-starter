@@ -1,13 +1,11 @@
 plugins {
-    // 1. 자바 라이브러리 제작을 위한 핵심 플러그인
-    id 'java-library' 
-    id 'org.springframework.boot' version '3.4.1'
-    id 'io.spring.dependency-management' version '1.1.7'
+    id 'java-library'
     id 'maven-publish'
+    id 'io.spring.dependency-management' version '1.1.7'
 }
 
 group = 'com.thenoah.dev'
-version = '0.0.1-SNAPSHOT'
+version = '0.0.1'
 
 java {
     toolchain {
@@ -19,45 +17,21 @@ repositories {
     mavenCentral()
 }
 
-dependencies {
-    // 사용자가 이 라이브러리를 추가하면 MyBatis 스타터도 함께 사용할 수 있게 api로 선언
-    api 'org.mybatis.spring.boot:mybatis-spring-boot-starter:3.0.4'
-    
-    // 스프링 내부 라이브러리(JDBC 등) 활용을 위한 의존성
-    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
-    
-    // 사용자가 application.yaml에서 IDE 자동완성 기능을 쓸 수 있게 도와줌
-    annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
-    
-    // 빌드 시 최종 Jar 파일에는 포함되지 않음
-    testImplementation 'org.springframework.boot:spring-boot-starter-test'
-    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    testRuntimeOnly 'org.postgresql:postgresql' // 테스트 시에만 DB 드라이버 사용
-}
-
-// 7. 배포 관련 상세 설정
-publishing {
-    publications {
-        mavenJava(MavenPublication) {
-            from components.java // 이 라이브러리의 jar와 의존성 정보를 포함
-            
-            groupId = 'com.thenoah.dev'
-            artifactId = 'mybatis-easy-starter'
-            version = '0.0.1-SNAPSHOT'
-        }
+dependencyManagement {
+    imports {
+        mavenBom "org.springframework.boot:spring-boot-dependencies:3.4.1"
     }
 }
 
-// 8. 빌드 설정: 실행 가능한 bootJar가 아닌 일반 jar로 생성
-// build.gradle 하단 수정
+dependencies {
+    api 'org.mybatis.spring.boot:mybatis-spring-boot-starter:3.0.4'
+    api 'org.springframework.boot:spring-boot-starter-jdbc'
 
-bootJar {
-    enabled = false
-}
+    annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
 
-jar {
-    enabled = true
-    archiveClassifier = '' // 이 설정을 넣어야 이름 뒤에 '-plain'이 붙지 않습니다!
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testRuntimeOnly 'org.postgresql:postgresql'
 }
 
 tasks.named('test') {
