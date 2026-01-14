@@ -160,6 +160,7 @@ public interface UserMapper extends BaseMapper<UserVO, Long> {
 ## 설정 (Configuration)
 MyBatis Easy Starter는 모든 기능이 기본적으로 보수적으로 동작하며,
 일부 기능은 명시적으로 설정해야만 활성화됩니다.
+
 ---
 ### 1. 기본 CRUD SQL 자동 생성
 ```yaml
