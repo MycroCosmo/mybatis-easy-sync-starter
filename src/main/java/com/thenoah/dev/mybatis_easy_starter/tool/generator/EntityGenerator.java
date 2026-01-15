@@ -14,57 +14,47 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-/**
- * 주의:
- * - 이 클래스는 "개발 환경에서만" 사용하는 것을 전제로 합니다.
- * - 서버 런타임(운영)에서는 src/main/... 경로를 수정할 수 없고, 수정하면 안 됩니다.
- *
- * 권장:
- * - application.yml에서 enabled=true는 개발 환경(profile=local)에서만 켜세요.
- */
 public class EntityGenerator {
 
     private static final Logger log = LoggerFactory.getLogger(EntityGenerator.class);
 
-    // private 타입 필드 추출 (기존 파일 텍스트 분석용)
     private static final Pattern FIELD_PATTERN = Pattern.compile("private\\s+([\\w\\.<>]+)\\s+(\\w+)\\s*;");
 
-    // "Added from DB column" 표시용
     private static final String ADDED_MARK = "// Added from DB column";
-
-    // "DELETED FROM DB" 표시용
     private static final String DELETED_MARK_PREFIX = "// [DELETED FROM DB] Column '";
-
-    // "RENAMED?" 표시용
     private static final String RENAMED_MARK_PREFIX = "// [RENAMED?] This field may have been renamed to column '";
-
-    // "Type Mismatch" 표시용
     private static final String TYPE_MISMATCH_PREFIX = "// [Type Mismatch] DB type:";
-
-    // rename 추정 임계치 (0~1)
     private static final double RENAME_SCORE_THRESHOLD = 0.62;
 
-    /**
-     * @param dataSource  DataSource
-     * @param basePackage 생성될 VO 패키지 (예: com.foo.app.vo)
-     * @param useDbFolder mapper 리소스 경로를 mapper/{dbName}로 둘지 여부
-     *
-     * 기본 경로:
-     * - java: src/main/java/{basePackage}
-     * - xml : src/main/resources/mapper[/dbName]
-     */
-    public void generate(DataSource dataSource, String basePackage, boolean useDbFolder) {
-        generate(dataSource, basePackage, useDbFolder,
+    // ✅ Added 필드를 고정 영역에만 관리
+    private static final String ADDED_BLOCK_BEGIN = "    // MyBatis-Easy: ADDED FIELDS BEGIN";
+    private static final String ADDED_BLOCK_END   = "    // MyBatis-Easy: ADDED FIELDS END";
+
+    private static final Pattern ADDED_BLOCK_PATTERN = Pattern.compile(
+            "(?s)\\s*// MyBatis-Easy: ADDED FIELDS BEGIN\\s*.*?\\s*// MyBatis-Easy: ADDED FIELDS END\\s*",
+            Pattern.MULTILINE
+    );
+
+    public void generate(DataSource dataSource,
+                         String basePackage,
+                         boolean useDbFolder,
+                         boolean enableTablePackage,
+                         String voRootPackage,
+                         Map<String, List<String>> packageMapping,
+                         String defaultModule) {
+
+        generate(dataSource, basePackage, useDbFolder, enableTablePackage, voRootPackage, packageMapping, defaultModule,
                 Paths.get("src/main/java"),
                 Paths.get("src/main/resources/mapper"));
     }
 
-    /**
-     * 테스트/확장용 오버로드 (경로를 외부에서 주입 가능)
-     */
     public void generate(DataSource dataSource,
                          String basePackage,
                          boolean useDbFolder,
+                         boolean enableTablePackage,
+                         String voRootPackage,
+                         Map<String, List<String>> packageMapping,
+                         String defaultModule,
                          Path javaRoot,
                          Path mapperRoot) {
 
@@ -74,7 +64,6 @@ public class EntityGenerator {
             return;
         }
 
-        // src/main/... 경로가 쓰기 가능하지 않으면 중단
         if (!isWritableProjectPath(javaRoot) || !isWritableProjectPath(mapperRoot)) {
             log.warn("MyBatis-Easy: target paths are not writable. " +
                             "This generator is intended for local development only. javaRoot={}, mapperRoot={}",
@@ -82,14 +71,15 @@ public class EntityGenerator {
             return;
         }
 
+        Map<String, String> tableToModule = buildTableToModuleMap(packageMapping);
+        String resolvedVoRoot = resolveVoRootPackage(voRootPackage, basePackage);
+        String resolvedDefaultModule = (defaultModule == null || defaultModule.isBlank()) ? "misc" : defaultModule.trim();
+
         try (Connection conn = dataSource.getConnection()) {
             DatabaseMetaData meta = conn.getMetaData();
 
             String dbName = safeDbName(meta);
-            Path voDir = javaRoot.resolve(basePackage.replace(".", "/"));
             Path xmlDir = useDbFolder ? mapperRoot.resolve(dbName) : mapperRoot;
-
-            ensureDirectory(voDir);
             ensureDirectory(xmlDir);
 
             try (ResultSet tables = meta.getTables(null, null, null, new String[]{"TABLE"})) {
@@ -98,18 +88,28 @@ public class EntityGenerator {
                     if (tableName == null || tableName.isBlank()) continue;
 
                     String className = convertToPascalCase(tableName);
+
+                    String effectiveBasePackage = basePackage;
+                    Path voDir = javaRoot.resolve(basePackage.replace(".", "/"));
+
+                    if (enableTablePackage) {
+                        String norm = normalizeTableName(tableName);
+                        String module = tableToModule.getOrDefault(norm, resolvedDefaultModule);
+                        effectiveBasePackage = resolvedVoRoot + "." + module + ".vo";
+                        voDir = javaRoot.resolve(effectiveBasePackage.replace(".", "/"));
+                    }
+
+                    ensureDirectory(voDir);
                     Path javaFilePath = voDir.resolve(className + ".java");
 
-                    // DB 컬럼 정보 수집
                     DbTableSnapshot snapshot = readTableSnapshot(meta, tableName);
 
                     if (!Files.exists(javaFilePath)) {
-                        createFullClass(snapshot, tableName, className, basePackage, javaFilePath);
+                        createFullClass(snapshot, tableName, className, effectiveBasePackage, javaFilePath);
                     } else {
-                        updateExistingClass(snapshot, tableName, className, basePackage, javaFilePath);
+                        updateExistingClass(snapshot, tableName, className, effectiveBasePackage, javaFilePath);
                     }
 
-                    // mapper xml 생성(없을 때만)
                     String mapperName = className + "Mapper";
                     Path xmlFilePath = xmlDir.resolve(mapperName + ".xml");
                     if (!Files.exists(xmlFilePath)) {
@@ -118,12 +118,60 @@ public class EntityGenerator {
                 }
             }
 
-            log.info("MyBatis-Easy: Entity/XML generation completed. basePackage={}, useDbFolder={}, db={}",
-                    basePackage, useDbFolder, dbName);
+            log.info("MyBatis-Easy: Entity/XML generation completed. basePackage={}, useDbFolder={}, enableTablePackage={}, voRootPackage={}, db={}",
+                    basePackage, useDbFolder, enableTablePackage, resolvedVoRoot, dbName);
 
         } catch (Exception e) {
             log.error("MyBatis-Easy: Generation failed", e);
         }
+    }
+
+    // -----------------------------
+    // mapping helpers
+    // -----------------------------
+
+    private Map<String, String> buildTableToModuleMap(Map<String, List<String>> packageMapping) {
+        Map<String, String> tableToModule = new LinkedHashMap<>();
+        if (packageMapping == null || packageMapping.isEmpty()) {
+            return tableToModule;
+        }
+
+        for (Map.Entry<String, List<String>> e : packageMapping.entrySet()) {
+            String module = (e.getKey() == null) ? "" : e.getKey().trim();
+            if (module.isBlank()) continue;
+
+            List<String> tables = e.getValue();
+            if (tables == null || tables.isEmpty()) continue;
+
+            for (String t : tables) {
+                if (t == null || t.isBlank()) continue;
+                String norm = normalizeTableName(t);
+
+                String prev = tableToModule.putIfAbsent(norm, module);
+                if (prev != null && !prev.equals(module)) {
+                    log.warn("MyBatis-Easy: table mapping conflict. table={} prevModule={} newModule={} -> keep prev",
+                            norm, prev, module);
+                }
+            }
+        }
+
+        return tableToModule;
+    }
+
+    private String normalizeTableName(String tableName) {
+        return tableName.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String resolveVoRootPackage(String voRootPackage, String basePackage) {
+        if (voRootPackage != null && !voRootPackage.isBlank()) {
+            return voRootPackage.trim();
+        }
+
+        if (basePackage == null) return "";
+        if (basePackage.endsWith(".vo")) {
+            return basePackage.substring(0, basePackage.length() - 3);
+        }
+        return basePackage;
     }
 
     // -----------------------------
@@ -150,7 +198,6 @@ public class EntityGenerator {
                 .append("@Table(name = \"").append(tableName).append("\")\n")
                 .append("public class ").append(className).append(" {\n\n");
 
-        // PK 후보 판단: id 컬럼이 있으면 @Id 붙임 (기존 로직 유지)
         for (DbColumn col : snapshot.columns) {
             String colName = col.columnName;
             String fieldName = convertToCamelCase(colName);
@@ -163,9 +210,13 @@ public class EntityGenerator {
             sb.append("    private ").append(javaType).append(" ").append(fieldName).append(";\n\n");
         }
 
+        // ✅ Added 블록 기본 생성
+        sb.append(ADDED_BLOCK_BEGIN).append("\n");
+        sb.append(ADDED_BLOCK_END).append("\n\n");
+
         sb.append("}\n");
         Files.writeString(javaFilePath, sb.toString(), StandardCharsets.UTF_8);
-        log.info("MyBatis-Easy: Created [{}]", javaFilePath.getFileName());
+        log.info("MyBatis-Easy: Created [{}]", javaFilePath.toAbsolutePath());
     }
 
     // -----------------------------
@@ -179,11 +230,8 @@ public class EntityGenerator {
                                      Path javaFilePath) throws Exception {
 
         String content = Files.readString(javaFilePath, StandardCharsets.UTF_8);
-
-        // 1) 로컬 파일의 private 필드 파싱 (fieldName -> type)
         Map<String, String> localFieldMap = parseLocalFields(content);
 
-        // 2) DB 필드 정보 (fieldName -> javaType), (fieldName -> columnName)
         LinkedHashSet<String> dbFieldNames = new LinkedHashSet<>();
         Map<String, String> dbFieldTypes = new HashMap<>();
         Map<String, String> dbColumnByFieldName = new HashMap<>();
@@ -197,9 +245,6 @@ public class EntityGenerator {
             dbColumnByFieldName.put(fieldName, c.columnName);
         }
 
-        // 3) deletedCandidates / addedCandidates
-        // - deleted: local에만 존재
-        // - added  : db에만 존재
         Set<String> deletedCandidates = localFieldMap.keySet().stream()
                 .filter(f -> !dbFieldNames.contains(f))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -208,9 +253,6 @@ public class EntityGenerator {
                 .filter(f -> !localFieldMap.containsKey(f))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
-        // 3-1) rename 후보 매칭 (deleted <-> added)
-        // - 타입 동일 우선
-        // - 이름 유사도 기반 점수
         Map<String, String> renameDeletedToAdded = detectRenamePairs(
                 deletedCandidates,
                 addedCandidates,
@@ -218,7 +260,6 @@ public class EntityGenerator {
                 dbFieldTypes
         );
 
-        // rename으로 매칭된 added는 "신규 컬럼 추가"로 취급하지 않음(중복/혼란 방지)
         Set<String> matchedAdded = new HashSet<>(renameDeletedToAdded.values());
         Set<String> effectiveAdded = addedCandidates.stream()
                 .filter(a -> !matchedAdded.contains(a))
@@ -226,7 +267,7 @@ public class EntityGenerator {
 
         boolean changed = false;
 
-        // 4) 삭제/rename 주석 마킹
+        // (1) deleted/renamed 마킹 (✅ 중복 누적 방지: 기존 마커 제거 후 1회만 삽입)
         for (String fieldName : deletedCandidates) {
             String fieldType = localFieldMap.get(fieldName);
             if (fieldType == null) continue;
@@ -234,12 +275,12 @@ public class EntityGenerator {
             String targetLine = "private " + fieldType + " " + fieldName + ";";
             if (!content.contains(targetLine)) continue;
 
-            // rename 후보면 RENAMED? 주석만 (DELETED 주석 대신)
             if (renameDeletedToAdded.containsKey(fieldName)) {
                 String addedField = renameDeletedToAdded.get(fieldName);
                 String newColumn = dbColumnByFieldName.getOrDefault(addedField, camelToSnake(addedField));
                 String renameMsg = RENAMED_MARK_PREFIX + newColumn + "' (field: " + addedField + ")";
 
+                content = removeMarkerDirectlyAbove(content, targetLine, RENAMED_MARK_PREFIX);
                 if (!content.contains(renameMsg)) {
                     content = content.replace(targetLine, renameMsg + "\n    " + targetLine);
                     changed = true;
@@ -249,8 +290,9 @@ public class EntityGenerator {
                 continue;
             }
 
-            // rename 후보가 아니면 기존처럼 DELETED 주석
             String deletedMsg = DELETED_MARK_PREFIX + camelToSnake(fieldName) + "' no longer exists in table " + tableName;
+
+            content = removeMarkerDirectlyAbove(content, targetLine, DELETED_MARK_PREFIX);
             if (!content.contains(deletedMsg)) {
                 content = content.replace(targetLine, deletedMsg + "\n    " + targetLine);
                 changed = true;
@@ -258,20 +300,7 @@ public class EntityGenerator {
             }
         }
 
-        // 5) 신규 필드 추가(rename으로 추정된 건 제외) + 타입 mismatch 체크
-        StringBuilder newFields = new StringBuilder();
-
-        // 신규 필드
-        for (String dbFieldName : effectiveAdded) {
-            String dbJavaType = dbFieldTypes.get(dbFieldName);
-            if (dbJavaType == null) dbJavaType = "String";
-
-            newFields.append("    private ").append(dbJavaType).append(" ").append(dbFieldName).append("; ")
-                    .append(ADDED_MARK).append("\n\n");
-            changed = true;
-        }
-
-        // 타입 mismatch (DB에 존재하는 필드들만)
+        // (2) 타입 불일치 마킹 (기존 마커 제거 후 1회만 삽입)
         for (String dbFieldName : dbFieldNames) {
             if (!localFieldMap.containsKey(dbFieldName)) continue;
 
@@ -282,6 +311,8 @@ public class EntityGenerator {
                 String typeWarning = TYPE_MISMATCH_PREFIX + " " + dbJavaType + " (Current: " + existingType + ")";
                 String targetLine = "private " + existingType + " " + dbFieldName + ";";
 
+                content = removeMarkerDirectlyAbove(content, targetLine, TYPE_MISMATCH_PREFIX);
+
                 if (content.contains(targetLine) && !content.contains(typeWarning)) {
                     content = content.replace(targetLine, typeWarning + "\n    " + targetLine);
                     changed = true;
@@ -289,42 +320,95 @@ public class EntityGenerator {
             }
         }
 
-        if (!changed) {
-            return;
+        // (3) ✅ Added 필드는 고정 블록 내부에만 추가
+        if (!effectiveAdded.isEmpty()) {
+            String updated = upsertAddedFieldsBlock(content, effectiveAdded, dbFieldTypes);
+            if (!updated.equals(content)) {
+                content = updated;
+                changed = true;
+            }
         }
 
-        // 6) 클래스 끝(마지막 }) 직전에 신규 필드 삽입
-        int lastBrace = content.lastIndexOf('}');
-        if (lastBrace < 0) {
-            log.warn("MyBatis-Easy: Invalid java file structure. skip update. file={}", javaFilePath);
-            return;
-        }
+        if (!changed) return;
 
-        String before = content.substring(0, lastBrace).trim();
-        String updated = before
-                + "\n\n"
-                + newFields
-                + "}\n";
-
-        Files.writeString(javaFilePath, updated, StandardCharsets.UTF_8);
-        log.info("MyBatis-Easy: Synced [{}] (Added/TypeCheck/DeletedCheck/RenameHint)", javaFilePath.getFileName());
+        Files.writeString(javaFilePath, content, StandardCharsets.UTF_8);
+        log.info("MyBatis-Easy: Synced [{}] (Added/TypeCheck/DeletedCheck/RenameHint)", javaFilePath.toAbsolutePath());
     }
 
     /**
-     * rename 후보 매칭:
-     * - deletedCandidates: VO에만 있는 필드명
-     * - addedCandidates  : DB에만 있는 필드명
-     * - localFieldMap    : VO field -> type
-     * - dbFieldTypes     : DB field -> type
-     *
-     * 결과: deletedField -> addedField (1:1 매칭)
+     * 특정 targetLine 바로 위에 같은 prefix 마커가 있으면 제거(누적 방지)
      */
-    private Map<String, String> detectRenamePairs(Set<String> deletedCandidates,
-                                                  Set<String> addedCandidates,
-                                                  Map<String, String> localFieldMap,
-                                                  Map<String, String> dbFieldTypes) {
+    private String removeMarkerDirectlyAbove(String content, String targetLine, String markerPrefix) {
+        if (content == null || content.isBlank()) return content;
+        if (targetLine == null || targetLine.isBlank()) return content;
+        if (markerPrefix == null || markerPrefix.isBlank()) return content;
 
-        // deleted마다 best added 후보를 찾고, added도 중복 매칭 방지(1:1)
+        String regex = "(?m)^\\s*" + Pattern.quote(markerPrefix) + ".*\\R\\s*"
+                + Pattern.quote(targetLine) + "\\s*$";
+        Pattern p = Pattern.compile(regex);
+        Matcher m = p.matcher(content);
+        if (m.find()) {
+            // markerLine + targetLine 을 targetLine만 남기도록 축약
+            String replacement = "    " + targetLine;
+            return content.substring(0, m.start()) + replacement + content.substring(m.end());
+        }
+        return content;
+    }
+
+    /**
+     * Added fields는 블록 내부에서만 관리한다.
+     */
+    private String upsertAddedFieldsBlock(String content,
+                                         Set<String> effectiveAdded,
+                                         Map<String, String> dbFieldTypes) {
+
+        if (content == null || content.isBlank()) return content;
+
+        Matcher m = ADDED_BLOCK_PATTERN.matcher(content);
+        if (m.find()) {
+            String block = m.group(0);
+
+            Set<String> alreadyDeclared = parseLocalFields(block).keySet();
+
+            StringBuilder append = new StringBuilder();
+            for (String dbFieldName : effectiveAdded) {
+                if (alreadyDeclared.contains(dbFieldName)) continue;
+
+                String dbJavaType = dbFieldTypes.getOrDefault(dbFieldName, "String");
+                append.append("    private ").append(dbJavaType).append(" ").append(dbFieldName).append("; ")
+                        .append(ADDED_MARK).append("\n\n");
+            }
+
+            if (append.isEmpty()) return content;
+
+            String newBlock = block.replace(ADDED_BLOCK_END, append + ADDED_BLOCK_END);
+            return content.substring(0, m.start()) + newBlock + content.substring(m.end());
+        }
+
+        int lastBrace = content.lastIndexOf('}');
+        if (lastBrace < 0) return content;
+
+        StringBuilder fields = new StringBuilder();
+        for (String dbFieldName : effectiveAdded) {
+            String dbJavaType = dbFieldTypes.getOrDefault(dbFieldName, "String");
+            fields.append("    private ").append(dbJavaType).append(" ").append(dbFieldName).append("; ")
+                    .append(ADDED_MARK).append("\n\n");
+        }
+        if (fields.isEmpty()) return content;
+
+        String block = "\n" + ADDED_BLOCK_BEGIN + "\n" + fields + ADDED_BLOCK_END + "\n";
+        return content.substring(0, lastBrace).trim() + block + "}\n";
+    }
+
+    // -----------------------------
+    // rename detect
+    // -----------------------------
+
+    private Map<String, String> detectRenamePairs(Set<String> deletedCandidates,
+                                                 Set<String> addedCandidates,
+                                                 Map<String, String> localFieldMap,
+                                                 Map<String, String> dbFieldTypes) {
+
         Map<String, String> result = new HashMap<>();
         Set<String> usedAdded = new HashSet<>();
 
@@ -340,8 +424,6 @@ public class EntityGenerator {
 
                 String addedType = dbFieldTypes.get(added);
                 if (addedType == null) continue;
-
-                // 타입이 다르면 rename으로 보기 어렵다(보수적으로)
                 if (!deletedType.equals(addedType)) continue;
 
                 double score = similarityScore(deleted, added);
@@ -360,10 +442,6 @@ public class EntityGenerator {
         return result;
     }
 
-    /**
-     * 이름 유사도 점수 (0~1)
-     * - camel/snake 혼합을 고려해서 정규화 후 비교
-     */
     private double similarityScore(String a, String b) {
         String na = normalizeName(a);
         String nb = normalizeName(b);
@@ -376,8 +454,6 @@ public class EntityGenerator {
         if (max == 0) return 0.0;
 
         double ratio = 1.0 - ((double) dist / (double) max);
-
-        // 너무 짧은 단어는 오탐이 많아서 약간 페널티
         if (max <= 4) ratio -= 0.08;
 
         return Math.max(0.0, Math.min(1.0, ratio));
@@ -385,7 +461,6 @@ public class EntityGenerator {
 
     private String normalizeName(String s) {
         if (s == null) return "";
-        // camelCase -> snake -> remove underscores
         String snake = camelToSnake(s);
         return snake.replace("_", "").toLowerCase(Locale.ROOT);
     }
@@ -398,7 +473,6 @@ public class EntityGenerator {
 
         int[] prev = new int[m + 1];
         int[] curr = new int[m + 1];
-
         for (int j = 0; j <= m; j++) prev[j] = j;
 
         for (int i = 1; i <= n; i++) {
@@ -434,10 +508,6 @@ public class EntityGenerator {
         return localFieldMap;
     }
 
-    // -----------------------------
-    // Create default XML
-    // -----------------------------
-
     private void createDefaultXml(String basePackage, String mapperName, Path xmlFilePath) throws Exception {
         String rootPackage = basePackage.contains(".")
                 ? basePackage.substring(0, basePackage.lastIndexOf('.'))
@@ -454,12 +524,8 @@ public class EntityGenerator {
                 """.formatted(namespace);
 
         Files.writeString(xmlFilePath, xml, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
-        log.info("MyBatis-Easy: Created mapper xml [{}]", xmlFilePath.getFileName());
+        log.info("MyBatis-Easy: Created mapper xml [{}]", xmlFilePath.toAbsolutePath());
     }
-
-    // -----------------------------
-    // DB snapshot
-    // -----------------------------
 
     private DbTableSnapshot readTableSnapshot(DatabaseMetaData meta, String tableName) throws Exception {
         List<DbColumn> columns = new ArrayList<>();
@@ -505,10 +571,6 @@ public class EntityGenerator {
         }
     }
 
-    // -----------------------------
-    // Type mapping
-    // -----------------------------
-
     private String mapSqlTypeToJavaType(int type) {
         return switch (type) {
             case Types.BIGINT -> "Long";
@@ -521,10 +583,6 @@ public class EntityGenerator {
             default -> "String";
         };
     }
-
-    // -----------------------------
-    // Naming utils
-    // -----------------------------
 
     private String convertToPascalCase(String s) {
         if (s == null || s.isEmpty()) return s;
@@ -547,10 +605,6 @@ public class EntityGenerator {
     private String camelToSnake(String str) {
         return str.replaceAll("([a-z])([A-Z]+)", "$1_$2").toLowerCase(Locale.ROOT);
     }
-
-    // -----------------------------
-    // Internal models
-    // -----------------------------
 
     private static class DbTableSnapshot {
         final String tableName;

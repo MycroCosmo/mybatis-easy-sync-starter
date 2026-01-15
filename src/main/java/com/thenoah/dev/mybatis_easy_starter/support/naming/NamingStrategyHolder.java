@@ -1,5 +1,7 @@
 package com.thenoah.dev.mybatis_easy_starter.support.naming;
 
+import java.util.Objects;
+
 public final class NamingStrategyHolder {
   private static volatile NamingStrategy strategy = new DefaultNamingStrategy();
 
@@ -8,6 +10,6 @@ public final class NamingStrategyHolder {
   }
 
   public static void set(NamingStrategy s) {
-    strategy = s;
+    strategy = Objects.requireNonNull(s, "NamingStrategy must not be null");
   }
 }

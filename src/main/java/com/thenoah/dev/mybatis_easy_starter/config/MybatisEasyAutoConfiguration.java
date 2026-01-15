@@ -32,9 +32,8 @@ import java.io.InputStream;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.sql.Connection;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -57,39 +56,38 @@ public class MybatisEasyAutoConfiguration {
     this.env = env;
   }
 
-  /**
-   * mapper XML에서 namespace 추출
-   */
+  // namespace="..." 또는 namespace='...' 지원
   private static final Pattern NAMESPACE_PATTERN =
-          Pattern.compile("<mapper[^>]*\\snamespace\\s*=\\s*\"([^\"]+)\"[^>]*>", Pattern.CASE_INSENSITIVE);
+      Pattern.compile("<mapper[^>]*\\snamespace\\s*=\\s*([\"'])([^\"']+)\\1[^>]*>", Pattern.CASE_INSENSITIVE);
 
-  /**
-   * CRUD SQL 자동 생성 기능 on/off (기본: true)
-   */
+  // </mapper> 대소문자/공백 변형 대응
+  private static final Pattern CLOSING_MAPPER_PATTERN =
+      Pattern.compile("</mapper\\s*>", Pattern.CASE_INSENSITIVE);
+
   private static final String PROP_AUTOSQL_ENABLED = "mybatis-easy.autosql.enabled";
-
-  /**
-   * Entity/XML 생성기 기능 on/off (기본: false 권장)
-   */
   private static final String PROP_GENERATOR_ENABLED = "mybatis-easy.generator.enabled";
+
+  private static final String MYBATIS_EASY_MARKER =
+      "  <!-- MyBatis-Easy: AUTO CRUD BEGIN -->\n";
+  private static final String MYBATIS_EASY_MARKER_END =
+      "  <!-- MyBatis-Easy: AUTO CRUD END -->\n";
 
   @Bean
   public ParameterMappingInterceptor parameterMappingInterceptor() {
     return new ParameterMappingInterceptor();
   }
 
-  /**
-   * 기존 MyBatis AutoConfiguration에 Interceptor만 안전하게 추가
-   */
   @Bean
   @ConditionalOnClass(ConfigurationCustomizer.class)
   public ConfigurationCustomizer mybatisEasyConfigurationCustomizer(
-          ParameterMappingInterceptor interceptor,
-          MybatisEasyProperties props
+      ParameterMappingInterceptor interceptor,
+      MybatisEasyProperties props
   ) {
     return configuration -> {
       configuration.addInterceptor(interceptor);
-      configuration.setMapUnderscoreToCamelCase(true);
+
+      // ✅ 강제 설정 제거 (사용자 MyBatis 정책 침범 방지)
+      // configuration.setMapUnderscoreToCamelCase(true);
 
       if (props.getLogging().isForceStdout()) {
         configuration.setLogImpl(org.apache.ibatis.logging.stdout.StdOutImpl.class);
@@ -97,21 +95,12 @@ public class MybatisEasyAutoConfiguration {
     };
   }
 
-  /**
-   * NamingStrategy:
-   * - 유저가 빈을 제공하면 그걸 사용
-   * - 없으면 Default 제공
-   */
   @Bean
   @ConditionalOnMissingBean(NamingStrategy.class)
   public NamingStrategy namingStrategy() {
     return new DefaultNamingStrategy();
   }
 
-  /**
-   * Holder 초기화:
-   * - 실제로 등록된 NamingStrategy(커스텀/기본)를 Holder에 세팅
-   */
   @Bean
   public Object namingStrategyHolderInitializer(NamingStrategy namingStrategy) {
     NamingStrategyHolder.set(namingStrategy);
@@ -119,18 +108,26 @@ public class MybatisEasyAutoConfiguration {
   }
 
   /**
-   * mapper XML을 원본 유지한 채로 </mapper> 직전에 자동 CRUD SQL만 삽입
-   * - namespace는 XML에서 직접 읽음
-   * - mapper/postgresql/... 구조 포함
+   * AutoSql: 기본 OFF
+   * - application.yml에서 mybatis-easy.autosql.enabled=true 일 때만 켜짐
+   * - + props.getAutoSql().enabled도 true여야 동작
    */
   @Bean
   @ConditionalOnClass(SqlSessionFactoryBeanCustomizer.class)
-  @ConditionalOnProperty(name = PROP_AUTOSQL_ENABLED, havingValue = "true", matchIfMissing = true)
-  public SqlSessionFactoryBeanCustomizer mybatisEasySqlSessionFactoryBeanCustomizer() {
+  @ConditionalOnProperty(name = PROP_AUTOSQL_ENABLED, havingValue = "true", matchIfMissing = false)
+  public SqlSessionFactoryBeanCustomizer mybatisEasySqlSessionFactoryBeanCustomizer(MybatisEasyProperties props) {
     return factoryBean -> {
+
+      if (!props.getAutoSql().isEnabled()) {
+        log.info("MyBatis-Easy: autosql.enabled=false (props). skip xml merge.");
+        return;
+      }
 
       Resource[] mapperResources = resolveMapperResources();
       if (mapperResources.length == 0) return;
+
+      // ✅ 매퍼마다 커넥션 오픈 방지: 1회 조회/캐시
+      final String dbProductName = resolveDbProductName();
 
       List<Resource> virtualResources = new ArrayList<>(mapperResources.length);
 
@@ -143,31 +140,40 @@ public class MybatisEasyAutoConfiguration {
 
         try (InputStream is = res.getInputStream()) {
           String xml = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-          String namespace = extractNamespace(xml);
 
+          // 재삽입 방지
+          if (xml.contains(MYBATIS_EASY_MARKER) || xml.contains(MYBATIS_EASY_MARKER_END)) {
+            virtualResources.add(res);
+            continue;
+          }
+
+          String namespace = extractNamespace(xml);
           if (namespace == null || namespace.isBlank()) {
             virtualResources.add(res);
             continue;
           }
 
-          String autoSql = generateAutoSqlByNamespace(namespace, xml);
+          String autoSql = generateAutoSqlByNamespace(namespace, xml, props, dbProductName);
+
           if (autoSql == null || autoSql.isBlank()) {
             virtualResources.add(res);
             continue;
           }
 
-          String merged = injectBeforeClosingMapper(xml, autoSql);
+          String merged = injectBeforeClosingMapper(xml, MYBATIS_EASY_MARKER + autoSql + MYBATIS_EASY_MARKER_END);
           if (merged == null) {
+            log.warn("MyBatis-Easy: could not inject auto sql (closing </mapper> not found). file={} ns={}",
+                res.getDescription(), namespace);
             virtualResources.add(res);
             continue;
           }
 
           virtualResources.add(new ByteArrayResource(
-                  merged.getBytes(StandardCharsets.UTF_8),
-                  "MyBatis-Easy virtual mapper: " + filename + " (" + namespace + ")"
+              merged.getBytes(StandardCharsets.UTF_8),
+              "MyBatis-Easy virtual mapper: " + filename + " (" + namespace + ")"
           ));
         } catch (Exception e) {
-          log.warn("MyBatis-Easy: Failed to process mapper xml: {}", filename, e);
+          log.warn("MyBatis-Easy: Failed to process mapper xml: {}", res.getDescription(), e);
           virtualResources.add(res);
         }
       }
@@ -177,39 +183,42 @@ public class MybatisEasyAutoConfiguration {
     };
   }
 
-  /**
-   * 개발 편의용 Generator (기본 off 권장)
-   */
   @Bean
   @ConditionalOnProperty(name = PROP_GENERATOR_ENABLED, havingValue = "true")
-  public EntityGenerator entityGenerator(DataSource dataSource) {
+  public EntityGenerator entityGenerator(DataSource dataSource, MybatisEasyProperties props) {
+    MybatisEasyProperties.Generator g = props.getGenerator();
 
-    boolean useDbFolder = env.getProperty("mybatis-easy.generator.use-db-folder", Boolean.class, true);
-
-    EntityGenerator generator = new EntityGenerator();
+    boolean useDbFolder = g.isUseDbFolder();
+    boolean enableTablePackage = g.isEnableTablePackage();
 
     List<String> packages = AutoConfigurationPackages.get(beanFactory);
-    String basePackage = packages.isEmpty() ? "" : packages.get(0) + ".vo";
+    String appBasePackage = packages.isEmpty() ? "" : packages.get(0);
+    String basePackage = appBasePackage.isBlank() ? "" : appBasePackage + ".vo";
 
-    generator.generate(dataSource, basePackage, useDbFolder);
+    EntityGenerator generator = new EntityGenerator();
+    generator.generate(
+        dataSource,
+        basePackage,
+        useDbFolder,
+        enableTablePackage,
+        g.getVoRootPackage(),
+        g.getPackageMapping(),
+        g.getDefaultModule()
+    );
+
     return generator;
   }
 
-  /**
-   * DB별 폴더 구조 유지:
-   * - mapper/** 은 mapper/postgresql/... 포함
-   * - 필요하면 mybatis-easy/.xml 도 포함 가능
-   */
   private Resource[] resolveMapperResources() {
     try {
       PathMatchingResourcePatternResolver resolver =
-              new PathMatchingResourcePatternResolver(applicationContext.getClassLoader());
+          new PathMatchingResourcePatternResolver(applicationContext.getClassLoader());
 
       Resource[] a = resolver.getResources("classpath*:mapper/**/*.xml");
 
       boolean includeGenerated = env.getProperty("mybatis-easy.mapper.include-generated", Boolean.class, false);
       if (!includeGenerated) {
-        return a;
+        return dedupAndSort(a);
       }
 
       Resource[] b = resolver.getResources("classpath*:mybatis-easy/mapper/**/*.xml");
@@ -218,36 +227,69 @@ public class MybatisEasyAutoConfiguration {
       merged.addAll(Arrays.asList(a));
       merged.addAll(Arrays.asList(b));
 
-      return merged.toArray(new Resource[0]);
+      return dedupAndSort(merged.toArray(new Resource[0]));
     } catch (Exception e) {
+      log.warn("MyBatis-Easy: resolveMapperResources failed", e);
       return new Resource[0];
     }
+  }
+
+  /**
+   * ✅ 중복 제거 + 안정적 순서(정렬)
+   * - Resource.getDescription() 기준으로 중복 제거
+   * - description 기준 정렬(빌드/환경에 따른 비결정성 완화)
+   */
+  private Resource[] dedupAndSort(Resource[] resources) {
+    if (resources == null || resources.length == 0) return new Resource[0];
+
+    Map<String, Resource> uniq = new LinkedHashMap<>();
+    for (Resource r : resources) {
+      if (r == null) continue;
+      String key = r.getDescription();
+      uniq.putIfAbsent(key, r);
+    }
+
+    List<Resource> list = new ArrayList<>(uniq.values());
+    list.sort(Comparator.comparing(Resource::getDescription, Comparator.nullsLast(String::compareTo)));
+
+    return list.toArray(new Resource[0]);
   }
 
   private String extractNamespace(String xml) {
     Matcher m = NAMESPACE_PATTERN.matcher(xml);
     if (!m.find()) return null;
-    return m.group(1);
+    return m.group(2);
   }
 
-  private String injectBeforeClosingMapper(String xml, String autoSql) {
-    int idx = xml.lastIndexOf("</mapper>");
-    if (idx < 0) return null;
+  /**
+   * ✅ </mapper> 정규식 기반으로 마지막 closing 태그 직전에 삽입
+   */
+  private String injectBeforeClosingMapper(String xml, String payload) {
+    if (xml == null) return null;
 
-    StringBuilder sb = new StringBuilder(xml.length() + autoSql.length() + 16);
-    sb.append(xml, 0, idx);
+    Matcher m = CLOSING_MAPPER_PATTERN.matcher(xml);
+    int lastStart = -1;
+    while (m.find()) lastStart = m.start();
+    if (lastStart < 0) return null;
+
+    StringBuilder sb = new StringBuilder(xml.length() + payload.length() + 32);
+    sb.append(xml, 0, lastStart);
 
     if (!sb.toString().endsWith("\n")) sb.append("\n");
-    sb.append(autoSql);
-    if (!autoSql.endsWith("\n")) sb.append("\n");
+    sb.append(payload);
+    if (!payload.endsWith("\n")) sb.append("\n");
 
-    sb.append(xml.substring(idx));
+    sb.append(xml.substring(lastStart));
     return sb.toString();
   }
 
-  private String generateAutoSqlByNamespace(String namespace, String xmlContent) {
+  private String generateAutoSqlByNamespace(String namespace,
+                                            String xmlContent,
+                                            MybatisEasyProperties props,
+                                            String dbProductName) {
     try {
-      Class<?> mapperClass = Class.forName(namespace);
+      ClassLoader cl = applicationContext.getClassLoader();
+      Class<?> mapperClass = Class.forName(namespace, false, cl);
 
       if (!BaseMapper.class.isAssignableFrom(mapperClass)) {
         return "";
@@ -256,13 +298,25 @@ public class MybatisEasyAutoConfiguration {
       Class<?> entityClass = resolveEntityType(mapperClass);
       if (entityClass == null) return "";
 
-      return AutoSqlBuilder.build(entityClass, xmlContent);
+      return AutoSqlBuilder.build(entityClass, xmlContent, props.getAutoSql(), dbProductName);
     } catch (ClassNotFoundException e) {
       log.debug("MyBatis-Easy: namespace is not a class: {}", namespace);
       return "";
     } catch (Exception e) {
       log.warn("MyBatis-Easy: auto sql generation failed for namespace={}", namespace, e);
       return "";
+    }
+  }
+
+  private String resolveDbProductName() {
+    try {
+      DataSource ds = applicationContext.getBean(DataSource.class);
+      try (Connection c = ds.getConnection()) {
+        String name = c.getMetaData().getDatabaseProductName();
+        return (name == null) ? "unknown" : name.toLowerCase(Locale.ROOT);
+      }
+    } catch (Exception e) {
+      return "unknown";
     }
   }
 
