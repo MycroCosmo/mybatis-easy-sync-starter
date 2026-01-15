@@ -138,6 +138,72 @@ mybatis-easy:
 
 ---
 
+#### 🔍 상세 동작 예시
+
+**1) DB 컬럼이 추가되었을 때 (자동 반영)**
+기존 필드 구조를 침범하지 않고, 지정된 영역(`ADDED FIELDS`) 내에만 필드를 추가합니다.
+```java
+public class User {
+    private Long id;
+    private String name;
+
+    // MyBatis-Easy: ADDED FIELDS BEGIN
+    private String nickname; // Added from DB column 'nickname'
+    // MyBatis-Easy: ADDED FIELDS END
+}
+```
+
+**2) DB 컬럼이 삭제되었을 때 (삭제 힌트)**
+DB에서 컬럼이 삭제되어도 VO의 필드를 자동으로 제거하지 않습니다. 대신 해당 필드 위에 삭제되었음을 알리는 주석을 추가하여 기존 로직의 컴파일 에러를 방지하고 개발자가 인지하도록 돕습니다.
+
+* 예: DB에서 `age` 컬럼이 삭제된 경우
+```java
+public class User {
+    private Long id;
+    private String name;
+
+    // [DELETED FROM DB] Column 'age' no longer exists in table USER
+    private Integer age;
+}
+```
+
+**3) DB 컬럼 타입이 변경되었을 때 (타입 경고)**
+DB 컬럼 타입이 변경되면 VO의 타입을 강제로 바꾸지 않고, 타입 불일치 경고 주석을 추가합니다. 개발자는 이 힌트를 보고 직접 VO 타입 수정 여부를 결정합니다.
+
+* 예: DB `point` 컬럼이 `Integer`로 변경되었으나 VO는 `Long`인 경우
+```java
+public class User {
+    private Long id;
+
+    // [Type Mismatch] DB type: Integer (Current: Long)
+    private Long point;
+}
+```
+**4) DB 컬럼명이 변경되었을 가능성이 있을 때 (이름 변경 추정)**
+DB에서 특정 컬럼이 사라지고 유사한 이름의 신규 컬럼이 생기면, EntityGenerator가 유사도를 기반으로 "이름 변경 가능성"을 추정하여 힌트 주석을 추가합니다.
+
+* 예: DB에서 `phoneNumber`가 사라지고 `mobile_number`가 생긴 경우 (추정)
+```java
+public class User {
+    private Long id;
+
+    // [RENAMED?] This field may have been renamed to column 'mobile_number' (field: mobileNumber)
+    private String phoneNumber;
+}
+```
+
+> 💡 이 기능은 "정답 확정"이 아니라 "**정리 힌트**"입니다. 실제 이름 변경 여부 및 대응은 개발자가 최종적으로 결정합니다.
+
+---
+
+## 🎯 핵심 설계 원칙
+
+1. **자동 추가:** 추가(생성)는 파괴적이지 않고 안전하므로 **자동 반영**을 수행합니다.
+2. **주석 힌트:** 삭제, 타입 변경, 이름 변경은 시스템 파급력이 크므로 **주석 힌트**만 제공합니다.
+3. **개발자 제어권:** 최종 제어권은 항상 개발자에게 있으며, 라이브러리는 판단을 돕는 가이드 역할만 수행합니다.
+
+---
+
 ## 🚀 권장 사용 흐름
 
 1. **초기 구축 (개발 환경):**
