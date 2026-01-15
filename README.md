@@ -335,18 +335,3 @@ mybatis-easy:
 | **DTO 자동 매핑** | ✅ 가능 | ✅ 가능 | |
 | **EntityGenerator** | ✅ **선택** | ❌ **금지** | 로컬 코드 및 리소스 오염 방지 |
 
----
-
-## 📦 설치 방법 (JitPack)
-
-### Gradle
-```gradle
-repositories {
-    maven { url '[https://jitpack.io](https://jitpack.io)' }
-}
-
-dependencies {
-    // 최신 버전을 확인하여 적용하세요.
-    implementation 'com.github.MycroCosmo:mybatis-easy-sync-starter:v0.0.2'
-}
-```
