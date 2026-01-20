@@ -5,39 +5,79 @@ import com.thenoah.dev.mybatis_easy_processor.scan.XmlMapperScanner;
 
 import java.util.*;
 
-public class MapperXmlValidator {
+public final class MapperXmlValidator {
 
-	public static DiffResult diff(Map<String, Set<String>> expected, XmlMapperScanner.XmlIndex xmlIndex) {
-	    Map<String, Set<String>> missing = new LinkedHashMap<>();
-	    Map<String, Set<String>> orphan = new LinkedHashMap<>();
+    private MapperXmlValidator() {}
 
-	    // missing: expected - actual(ids)
-	    for (var e : expected.entrySet()) {
-	        String ns = e.getKey();
-	        Set<String> expIds = e.getValue();
+    public static DiffResult diff(Map<String, Set<String>> expected,
+                                  XmlMapperScanner.XmlIndex xmlIndex) {
 
-	        Set<String> actIds = xmlIndex.idsOf(ns); // 없으면 empty
-	        Set<String> miss = new LinkedHashSet<>(expIds);
-	        miss.removeAll(actIds);
+        if (expected == null) expected = Map.of();
 
-	        if (!miss.isEmpty()) {
-	            missing.put(ns, miss);
-	        }
-	    }
+        Map<String, Set<String>> missing = new LinkedHashMap<>();
+        Map<String, Set<String>> orphan  = new LinkedHashMap<>();
 
-	    // orphan: actual(ids) - expected
-	    for (String ns : xmlIndex.namespaces()) {
-	        Set<String> actIds = xmlIndex.idsOf(ns);
-	        Set<String> expIds = expected.getOrDefault(ns, Set.of());
+        // 재현성: namespace 정렬
+        List<String> expectedNamespaces = new ArrayList<>(expected.keySet());
+        Collections.sort(expectedNamespaces);
 
-	        Set<String> orp = new LinkedHashSet<>(actIds);
-	        orp.removeAll(expIds);
+        // missing: expected - actual(ids)
+        for (String ns : expectedNamespaces) {
+            Set<String> expIds = expected.getOrDefault(ns, Set.of());
+            if (expIds.isEmpty()) continue;
 
-	        if (!orp.isEmpty()) {
-	            orphan.put(ns, orp);
-	        }
-	    }
-	    return new DiffResult(missing, orphan);
-	}
+            Set<String> actIds = xmlIndex.idsOf(ns); // 없으면 empty
+            if (actIds.isEmpty()) {
+                // 전부 missing
+                missing.put(ns, unmodifiableSortedSet(expIds));
+                continue;
+            }
 
+            Set<String> miss = new LinkedHashSet<>(expIds);
+            miss.removeAll(actIds);
+
+            if (!miss.isEmpty()) {
+                missing.put(ns, unmodifiableSortedSet(miss));
+            }
+        }
+
+        // orphan: actual(ids) - expected
+        List<String> actualNamespaces = new ArrayList<>(xmlIndex.namespaces());
+        Collections.sort(actualNamespaces);
+
+        for (String ns : actualNamespaces) {
+            Set<String> actIds = xmlIndex.idsOf(ns);
+            if (actIds.isEmpty()) continue;
+
+            Set<String> expIds = expected.getOrDefault(ns, Set.of());
+            if (expIds.isEmpty()) {
+                // 전부 orphan
+                orphan.put(ns, unmodifiableSortedSet(actIds));
+                continue;
+            }
+
+            Set<String> orp = new LinkedHashSet<>(actIds);
+            orp.removeAll(expIds);
+
+            if (!orp.isEmpty()) {
+                orphan.put(ns, unmodifiableSortedSet(orp));
+            }
+        }
+
+        // Map도 불변으로 감싸서 리턴(안전)
+        return new DiffResult(
+                Collections.unmodifiableMap(missing),
+                Collections.unmodifiableMap(orphan)
+        );
+    }
+
+    /**
+     * 결과의 재현성/가독성:
+     * - Set 내용을 정렬(TreeSet)로 고정
+     * - 불변으로 감싸서 외부 수정 방지
+     */
+    private static Set<String> unmodifiableSortedSet(Set<String> src) {
+        if (src == null || src.isEmpty()) return Set.of();
+        return Collections.unmodifiableSet(new TreeSet<>(src));
+    }
 }

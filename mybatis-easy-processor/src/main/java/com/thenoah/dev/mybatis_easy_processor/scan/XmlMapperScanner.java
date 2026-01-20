@@ -5,6 +5,7 @@ import com.thenoah.dev.mybatis_easy_processor.util.XmlParser;
 
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class XmlMapperScanner {
 
@@ -15,76 +16,102 @@ public class XmlMapperScanner {
     }
 
     public XmlIndex scan() throws Exception {
-        Path root = resolveXmlRoot(options.xmlDir());
-
-        // ✅ 디버그(원인 확정용): user.dir 흔들림 방지 확인
-        System.err.println("MES DEBUG user.dir=" + System.getProperty("user.dir"));
-        System.err.println("MES DEBUG xmlDir(raw)=" + options.xmlDir());
-        System.err.println("MES DEBUG xmlDir(resolved)=" + root);
+        Path root = resolveXmlRootCached(options.xmlDir());
 
         Map<String, Path> nsToPath = new HashMap<>();
         Map<String, Set<String>> nsToIds = new HashMap<>();
 
-        if (!Files.exists(root)) return new XmlIndex(nsToPath, nsToIds);
-
-        try (var stream = Files.walk(root)) {
-            stream.filter(p -> Files.isRegularFile(p) && p.toString().endsWith(".xml"))
-                  .forEach(p -> {
-                      try {
-                          // ✅ flat-only 강제: xmlDir 바로 아래 파일만 허용
-                          Path rel = root.relativize(p);
-                          if (rel.getNameCount() != 1) {
-                              throw new IllegalStateException(
-                                      "MES policy violation: mapper xml must be directly under xmlDir (flat).\n" +
-                                      "- xmlDir(resolved): " + root + "\n" +
-                                      "- found(abs): " + p.toAbsolutePath() + "\n" +
-                                      "- rel: " + rel
-                              );
-                          }
-
-                          XmlParser.ParsedXml parsed = XmlParser.parse(p);
-                          String ns = parsed.namespace();
-                          if (ns == null || ns.isBlank()) return;
-
-                          // ✅ 동일 namespace 중복 방지
-                          Path prev = nsToPath.putIfAbsent(ns, p);
-                          if (prev != null) {
-                              throw new IllegalStateException(
-                                      "MES duplicate mapper namespace detected: " + ns + "\n" +
-                                      "- first(abs): " + prev.toAbsolutePath() + "\n" +
-                                      "- second(abs): " + p.toAbsolutePath()
-                              );
-                          }
-
-                          nsToIds.put(ns, parsed.statementIds());
-                      } catch (Exception ex) {
-                          throw new RuntimeException(ex);
-                      }
-                  });
-        } catch (RuntimeException re) {
-            if (re.getCause() instanceof Exception e) throw e;
-            throw re;
+        if (!Files.isDirectory(root)) {
+            return new XmlIndex(root, nsToPath, nsToIds);
         }
 
-        return new XmlIndex(nsToPath, nsToIds);
+        // flat-only 정책: xmlDir 바로 아래 *.xml만 읽는다.
+        List<Path> xmlFiles = new ArrayList<>();
+        try (DirectoryStream<Path> ds = Files.newDirectoryStream(root, "*.xml")) {
+            for (Path p : ds) {
+                if (Files.isRegularFile(p)) xmlFiles.add(p);
+            }
+        }
+
+        // 재현성: 파일명 기준 정렬
+        xmlFiles.sort(Comparator.comparing(Path::getFileName));
+
+        for (Path p : xmlFiles) {
+            final XmlParser.ParsedXml parsed;
+            try {
+                parsed = XmlParser.parse(p);
+            } catch (Exception e) {
+                throw new IllegalStateException(
+                        "MES failed to parse mapper xml: " + p.toAbsolutePath() +
+                        " (" + e.getClass().getSimpleName() + ": " + safeMsg(e) + ")",
+                        e
+                );
+            }
+
+            String ns = parsed.namespace();
+            if (ns == null || ns.isBlank()) continue;
+
+            Path prev = nsToPath.putIfAbsent(ns, p);
+            if (prev != null) {
+                throw new IllegalStateException(
+                        "MES duplicate mapper namespace detected: " + ns + "\n" +
+                        "- first(abs): " + prev.toAbsolutePath() + "\n" +
+                        "- second(abs): " + p.toAbsolutePath()
+                );
+            }
+
+            // 재현성: ids 정렬 고정 + 불변
+            Set<String> ids = parsed.statementIds();
+            Set<String> sorted = (ids == null || ids.isEmpty())
+                    ? Set.of()
+                    : Collections.unmodifiableSet(new TreeSet<>(ids));
+
+            nsToIds.put(ns, sorted);
+        }
+
+        return new XmlIndex(root, nsToPath, nsToIds);
+    }
+
+    private static String safeMsg(Throwable t) {
+        String m = t.getMessage();
+        return (m == null || m.isBlank()) ? "(no message)" : m;
+    }
+
+    // ===================== root resolve caching =====================
+
+    /**
+     * 캐시 키: (user.dir | xmlDirRaw)
+     * - IDE/Gradle에서 반복 컴파일 시 resolve 비용을 크게 줄여줌
+     */
+    private static final Map<String, Path> RESOLVED_ROOT_CACHE = new ConcurrentHashMap<>();
+
+    private static Path resolveXmlRootCached(String xmlDirRaw) {
+        String userDir = System.getProperty("user.dir");
+        String key = userDir + "|" + xmlDirRaw;
+        return RESOLVED_ROOT_CACHE.computeIfAbsent(key, k -> resolveXmlRoot(xmlDirRaw));
     }
 
     /**
      * ✅ 상대경로 xmlDir을 “프로젝트 루트” 기준으로 고정해서 해석
-     * - 우선 user.dir에서 위로 올라가며 settings.gradle(.kts) / build.gradle(.kts) / pom.xml을 찾음
+     * - user.dir에서 위로 올라가며 settings.gradle(.kts) / build.gradle(.kts) / pom.xml을 찾음
      * - 찾으면 그 디렉터리를 루트로 확정하고 xmlDir을 resolve
-     * - 못 찾으면 기존대로 user.dir 기준(최후의 수단)
+     * - 못 찾으면 user.dir 기준(최후의 수단)
      */
     private static Path resolveXmlRoot(String xmlDirRaw) {
         Path xmlDirPath = Path.of(xmlDirRaw);
-        if (xmlDirPath.isAbsolute()) {
-            return xmlDirPath.normalize();
-        }
+        if (xmlDirPath.isAbsolute()) return xmlDirPath.normalize();
 
         Path start = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
-        Path projectRoot = findProjectRoot(start).orElse(start);
+        Path projectRoot = findProjectRootCached(start).orElse(start);
 
         return projectRoot.resolve(xmlDirPath).normalize();
+    }
+
+    // project root 탐색 캐시: start 디렉터리가 같으면 결과도 같다고 가정(현실적으로 맞음)
+    private static final Map<Path, Optional<Path>> PROJECT_ROOT_CACHE = new ConcurrentHashMap<>();
+
+    private static Optional<Path> findProjectRootCached(Path start) {
+        return PROJECT_ROOT_CACHE.computeIfAbsent(start, XmlMapperScanner::findProjectRoot);
     }
 
     private static Optional<Path> findProjectRoot(Path start) {
@@ -103,12 +130,21 @@ public class XmlMapperScanner {
     }
 
     public static class XmlIndex {
+        private final Path resolvedRoot;
         private final Map<String, Path> nsToPath;
         private final Map<String, Set<String>> nsToIds;
 
-        public XmlIndex(Map<String, Path> nsToPath, Map<String, Set<String>> nsToIds) {
-            this.nsToPath = nsToPath;
-            this.nsToIds = nsToIds;
+        public XmlIndex(Path resolvedRoot, Map<String, Path> nsToPath, Map<String, Set<String>> nsToIds) {
+            this.resolvedRoot = resolvedRoot;
+
+            // 외부에서 실수로 수정 못 하게 불변으로 감쌈
+            this.nsToPath = Collections.unmodifiableMap(new LinkedHashMap<>(nsToPath));
+            this.nsToIds  = Collections.unmodifiableMap(new LinkedHashMap<>(nsToIds));
+        }
+
+        /** XmlMapperScanner가 실제로 스캔한 xmlDir의 "resolved absolute root" */
+        public Path resolvedRoot() {
+            return resolvedRoot;
         }
 
         public Optional<Path> xmlPathOf(String namespace) {
@@ -120,7 +156,7 @@ public class XmlMapperScanner {
         }
 
         public Set<String> namespaces() {
-            return nsToPath.keySet();
+            return nsToPath.keySet(); // 이미 unmodifiableMap
         }
     }
 }

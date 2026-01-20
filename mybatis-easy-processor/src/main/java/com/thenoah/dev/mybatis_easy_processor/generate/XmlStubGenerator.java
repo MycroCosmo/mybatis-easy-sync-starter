@@ -1,6 +1,5 @@
 package com.thenoah.dev.mybatis_easy_processor.generate;
 
-import com.thenoah.dev.mybatis_easy_processor.config.ProcessorOptions;
 import com.thenoah.dev.mybatis_easy_processor.model.DiffResult;
 import com.thenoah.dev.mybatis_easy_processor.scan.XmlMapperScanner;
 
@@ -8,74 +7,87 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 
-public class XmlStubGenerator {
+public final class XmlStubGenerator {
 
-    private final ProcessorOptions options;
-
-    public XmlStubGenerator(ProcessorOptions options) {
-        this.options = options;
-    }
+    public XmlStubGenerator() {}
 
     public void generateMissingStubs(DiffResult diff, XmlMapperScanner.XmlIndex xmlIndex) throws Exception {
-        System.out.println("MES: generateMissingStubs called");
-        System.out.println("MES: xmlDir = " + options.xmlDir());
+        if (diff == null || xmlIndex == null) return;
 
-        // missing 또는 orphan이 있는 namespace 전체를 처리
+        Map<String, Set<String>> missingMap = nullToEmpty(diff.missing());
+        Map<String, Set<String>> orphanMap  = nullToEmpty(diff.orphan());
+
+        // missing 또는 orphan이 있는 namespace 전체
         Set<String> namespaces = new LinkedHashSet<>();
-        namespaces.addAll(diff.missing().keySet());
-        namespaces.addAll(diff.orphan().keySet());
+        namespaces.addAll(missingMap.keySet());
+        namespaces.addAll(orphanMap.keySet());
 
-        System.out.println("MES: namespaces to process=" + namespaces);
+        if (namespaces.isEmpty()) return;
 
-        for (String namespace : namespaces) {
-            Set<String> missingIds = diff.missing().getOrDefault(namespace, Set.of());
-            Set<String> orphanIds  = diff.orphan().getOrDefault(namespace, Set.of());
+        // 재현성: 처리 순서 고정
+        List<String> ordered = new ArrayList<>(namespaces);
+        Collections.sort(ordered);
+
+        for (String namespace : ordered) {
+            Set<String> missingIds = missingMap.getOrDefault(namespace, Set.of());
+            Set<String> orphanIds  = orphanMap.getOrDefault(namespace, Set.of());
+
+            if (missingIds.isEmpty() && orphanIds.isEmpty()) continue;
 
             Path targetXml = xmlIndex.xmlPathOf(namespace)
-                .orElseGet(() -> defaultXmlPath(namespace));
+                    .orElseGet(() -> defaultXmlPath(namespace, xmlIndex));
 
-            Files.createDirectories(targetXml.getParent());
+            Path parent = targetXml.getParent();
 
-            System.out.println("MES: namespace=" + namespace);
-            System.out.println("MES: target xml=" + targetXml.toAbsolutePath());
-            System.out.println("MES: missing ids=" + missingIds);
-            System.out.println("MES: orphan ids=" + orphanIds);
-
+            // 파일이 없으면: missing 있을 때만 새 파일 생성
             if (!Files.exists(targetXml)) {
-                // 새 파일 생성은 missing이 있을 때만 의미 있음
                 if (!missingIds.isEmpty()) {
+                    if (parent != null) Files.createDirectories(parent);
                     createNewMapperXml(targetXml, namespace, missingIds);
                 }
-                // orphan만 있고 파일이 없으면 할 일 없음
                 continue;
             }
 
+            // 파일이 있으면: 섹션 보장 후 필요한 작업만
+            if (parent != null) Files.createDirectories(parent);
+
             SafeXmlWriter.ensureMesSectionExists(targetXml);
 
-            SafeXmlWriter.appendMissingStatements(targetXml, missingIds);
-
-            SafeXmlWriter.markOrphansWithComment(targetXml, orphanIds);
+            if (!missingIds.isEmpty()) {
+                SafeXmlWriter.appendMissingStatements(targetXml, missingIds);
+            }
+            if (!orphanIds.isEmpty()) {
+                SafeXmlWriter.markOrphansWithComment(targetXml, orphanIds);
+            }
         }
     }
 
-    private Path defaultXmlPath(String namespace) {
+    /**
+     * 새 파일 생성 경로는 XmlMapperScanner가 스캔한 "resolvedRoot" 기준
+     * - 스캔/생성 기준이 동일
+     * - flat-only 정책에 맞춰 단순 파일명 생성
+     */
+    private Path defaultXmlPath(String namespace, XmlMapperScanner.XmlIndex xmlIndex) {
         int lastDot = namespace.lastIndexOf('.');
         String simple = (lastDot > 0) ? namespace.substring(lastDot + 1) : namespace;
 
-        Path dir = Path.of(options.xmlDir());
+        Path dir = xmlIndex.resolvedRoot();
         return dir.resolve(simple + ".xml");
     }
 
     private void createNewMapperXml(Path xmlPath, String namespace, Set<String> ids) throws Exception {
-        Files.createDirectories(xmlPath.getParent());
+        if (ids == null || ids.isEmpty()) return;
 
-        List<String> blocks = new ArrayList<>();
-        for (String id : ids) {
+        List<String> sorted = new ArrayList<>(ids);
+        Collections.sort(sorted);
+
+        List<String> blocks = new ArrayList<>(sorted.size());
+        for (String id : sorted) {
             blocks.add(buildAutoGenBlockForNewFile(id));
         }
         String sectionBody = String.join("\n\n", blocks);
 
-        StringBuilder sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder(512 + sectionBody.length());
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         sb.append("<!DOCTYPE mapper\n");
         sb.append("  PUBLIC \"-//mybatis.org//DTD Mapper 3.0//EN\"\n");
@@ -89,14 +101,12 @@ public class XmlStubGenerator {
         SafeXmlWriter.atomicWriteNew(xmlPath, sb.toString());
     }
 
-    // 새 파일 생성 시에는 이미 섹션 안이므로 탭을 포함한 블록을 생성
     private String buildAutoGenBlockForNewFile(String id) {
         String tag = guessTagById(id);
 
-        return ""
-            + "\t<" + tag + " id=\"" + id + "\">\n"
-            + "\t  /* TODO: write SQL */\n"
-            + "\t</" + tag + ">";
+        return "\t<" + tag + " id=\"" + id + "\">\n"
+             + "\t  /* TODO: write SQL */\n"
+             + "\t</" + tag + ">";
     }
 
     private String guessTagById(String id) {
@@ -106,5 +116,9 @@ public class XmlStubGenerator {
         if (lower.startsWith("update") || lower.startsWith("modify")) return "update";
         if (lower.startsWith("delete") || lower.startsWith("remove")) return "delete";
         return "select";
+    }
+
+    private static <K, V> Map<K, V> nullToEmpty(Map<K, V> m) {
+        return (m == null) ? Map.of() : m;
     }
 }

@@ -10,8 +10,7 @@ import com.thenoah.dev.mybatis_easy_processor.validate.MapperXmlValidator;
 
 import javax.annotation.processing.*;
 import javax.lang.model.SourceVersion;
-import javax.lang.model.element.Element;
-import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.*;
 import javax.tools.Diagnostic;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -22,13 +21,23 @@ import java.util.Set;
         ProcessorOptions.KEY_XML_DIR,
         ProcessorOptions.KEY_FAIL_ON_MISSING,
         ProcessorOptions.KEY_FAIL_ON_ORPHAN,
-        ProcessorOptions.KEY_GENERATE_MISSING
+        ProcessorOptions.KEY_GENERATE_MISSING,
+        ProcessorOptions.KEY_DEBUG
 })
-public class MesProcessor extends AbstractProcessor {
+public final class MesProcessor extends AbstractProcessor {
 
-    // 라운드별 누적 (핵심)
-    private final Set<Element> collectedMappers = new LinkedHashSet<>();
+    // 라운드별 누적 (마지막 라운드에서만 실행)
+    private final Set<TypeElement> collectedMappers = new LinkedHashSet<>();
+
     private TypeElement mapperAnn;
+    private Messager messager;
+
+    private ProcessorOptions options;
+    private boolean debug;
+
+    // 재사용
+    private MapperMethodScanner mapperScanner;
+    private XmlMapperScanner xmlScanner;
 
     @Override
     public Set<String> getSupportedAnnotationTypes() {
@@ -38,129 +47,161 @@ public class MesProcessor extends AbstractProcessor {
     @Override
     public synchronized void init(ProcessingEnvironment processingEnv) {
         super.init(processingEnv);
-        mapperAnn = processingEnv.getElementUtils().getTypeElement("org.apache.ibatis.annotations.Mapper");
 
-        processingEnv.getMessager().printMessage(Diagnostic.Kind.WARNING,
-                "MES init options=" + processingEnv.getOptions());
+        this.messager = processingEnv.getMessager();
+        this.options = ProcessorOptions.from(processingEnv.getOptions());
+        this.debug = options.debug();
+
+        this.mapperAnn = processingEnv.getElementUtils()
+                .getTypeElement("org.apache.ibatis.annotations.Mapper");
+
+        // ctor에 env 없음
+        this.mapperScanner = new MapperMethodScanner();
+        this.xmlScanner = new XmlMapperScanner(options);
+
+        if (debug) {
+            note("MES init options=" + processingEnv.getOptions());
+        }
     }
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         if (mapperAnn == null) {
-            processingEnv.getMessager().printMessage(
-                    Diagnostic.Kind.ERROR,
-                    "mybatis @Mapper annotation not found on classpath."
-            );
+            error("mybatis @Mapper annotation not found on classpath.");
             return false;
         }
 
-        // ✅ 1) 먼저 수집부터
+        // 1) 수집: @Mapper 붙은 것 중 interface만 누적
         var newly = roundEnv.getElementsAnnotatedWith(mapperAnn);
-        collectedMappers.addAll(newly);
+        int newlyCollected = 0;
 
-        // ✅ 2) 라운드 로그 (수집 후 기준으로 찍기)
-        processingEnv.getMessager().printMessage(
-                Diagnostic.Kind.WARNING,
-                "MES round: processingOver=" + roundEnv.processingOver()
-                        + ", annotations=" + annotations.size()
-                        + ", newlyFoundMappers=" + newly.size()
-                        + ", collected=" + collectedMappers.size()
-        );
+        for (Element el : newly) {
+            if (el.getKind() == ElementKind.INTERFACE) {
+                collectedMappers.add((TypeElement) el);
+                newlyCollected++;
+            } else if (debug) {
+                note("MES ignored non-interface @Mapper element: " + el);
+            }
+        }
 
-        // ✅ 3) 마지막 라운드에서만 실행
-        if (!roundEnv.processingOver()) return false;
+        if (debug) {
+            note("MES round: processingOver=" + roundEnv.processingOver()
+                    + ", annotations=" + annotations.size()
+                    + ", newlyFound=" + newly.size()
+                    + ", newlyCollectedInterfaces=" + newlyCollected
+                    + ", collectedTotal=" + collectedMappers.size());
+        }
 
-        processingEnv.getMessager().printMessage(Diagnostic.Kind.WARNING, "MES last round start");
+        // 2) 마지막 라운드에서만 실행
+        if (!roundEnv.processingOver()) {
+            return false;
+        }
 
-        ProcessorOptions options = ProcessorOptions.from(processingEnv.getOptions());
+        if (debug) note("MES last round start");
 
         try {
             if (collectedMappers.isEmpty()) {
-                processingEnv.getMessager().printMessage(
-                        Diagnostic.Kind.WARNING,
-                        "No @Mapper interfaces found. Ensure mapper interfaces are annotated with @Mapper."
-                );
-                return false;
+                if (debug) note("MES: no @Mapper interfaces found.");
+                return true;
             }
 
-            MapperMethodScanner mapperScanner = new MapperMethodScanner(processingEnv);
             var scan = mapperScanner.scan(collectedMappers);
 
-            // ✅ scan 결과 로그 추가 (핵심)
-            processingEnv.getMessager().printMessage(
-                    Diagnostic.Kind.WARNING,
-                    "MES scanned namespaces=" + scan.expected().keySet().size()
-            );
+            if (debug) {
+                note("MES scanned namespaces=" + scan.expected().size());
+            }
 
             // 오버로딩 금지
             if (!scan.overloadedMethodNames().isEmpty()) {
-                StringBuilder sb = new StringBuilder();
+                StringBuilder sb = new StringBuilder(256);
                 sb.append("Overloaded mapper methods are not supported (XML id collision).\n");
                 for (var e : scan.overloadedMethodNames().entrySet()) {
                     for (String name : e.getValue()) {
                         sb.append("- ").append(e.getKey()).append("#").append(name).append("\n");
                     }
                 }
-                processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, sb.toString());
-                return false;
+                error(sb.toString());
+                return true;
             }
 
             var expected = scan.expected();
-            processingEnv.getMessager().printMessage(
-                    Diagnostic.Kind.WARNING,
-                    "MES expected ids(PostMapper)=" + expected.getOrDefault(
-                            "com.example.libaray_test.mapper.PostMapper",
-                            java.util.Collections.emptySet()
-                    )
-            );
-            XmlMapperScanner xmlScanner = new XmlMapperScanner(options);
             var xmlIndex = xmlScanner.scan();
-            processingEnv.getMessager().printMessage(
-                    Diagnostic.Kind.WARNING,
-                    "MES xml for PostMapper=" + xmlIndex.xmlPathOf(
-                            "com.example.libaray_test.mapper.PostMapper"
-                    ).orElse(null)
-            );
+
             DiffResult diff = MapperXmlValidator.diff(expected, xmlIndex);
 
-            // ✅ diff 결과 로그 추가 (핵심)
-            processingEnv.getMessager().printMessage(
-                    Diagnostic.Kind.WARNING,
-                    "MES diff: missingNamespaces=" + diff.missing().size()
-                            + ", orphanNamespaces=" + diff.orphan().size()
-            );
-
-            if (!diff.missing().isEmpty()) {
-                String msg = diff.formatMissing(50);
-                processingEnv.getMessager().printMessage(
-                        options.failOnMissing() ? Diagnostic.Kind.ERROR : Diagnostic.Kind.WARNING,
-                        msg
-                );
+            if (debug) {
+                note("MES diff: missingNamespaces=" + diff.missing().size()
+                        + ", orphanNamespaces=" + diff.orphan().size()
+                        + ", xmlRoot=" + xmlIndex.resolvedRoot());
             }
 
+            if (!diff.missing().isEmpty()) {
+                String msg = debug ? diff.formatMissingDetailed(50) : diff.formatMissing(5);
+                print(options.failOnMissing() ? Diagnostic.Kind.ERROR : Diagnostic.Kind.WARNING, msg);
+            }
+
+            // orphan도 missing과 동일한 로그 정책
             if (!diff.orphan().isEmpty()) {
-                String msg = diff.formatOrphan(50);
-                processingEnv.getMessager().printMessage(
-                        options.failOnOrphan() ? Diagnostic.Kind.ERROR : Diagnostic.Kind.WARNING,
-                        msg
-                );
+                String msg = debug ? diff.formatOrphanDetailed(50) : diff.formatOrphan(5);
+                print(options.failOnOrphan() ? Diagnostic.Kind.ERROR : Diagnostic.Kind.WARNING, msg);
             }
 
             boolean hasWork = !diff.missing().isEmpty() || !diff.orphan().isEmpty();
 
             if (options.generateMissing() && hasWork) {
-                new XmlStubGenerator(options).generateMissingStubs(diff, xmlIndex);
-                processingEnv.getMessager().printMessage(Diagnostic.Kind.NOTE, "MES: updated XML stubs/orphans.");
+                new XmlStubGenerator().generateMissingStubs(diff, xmlIndex);
+
+                //  NOTE는 debug에서만
+                if (debug) {
+                    note("MES: updated XML stubs/orphans.");
+                }
             }
 
         } catch (Exception e) {
-            processingEnv.getMessager().printMessage(
-                    Diagnostic.Kind.ERROR,
-                    "mes-processor failed: " + e.getClass().getSimpleName() + ": " + e.getMessage()
-            );
+            error(buildFailureMessage(e));
         }
 
-        return false;
+        return true;
     }
 
+    private String buildFailureMessage(Exception e) {
+        StringBuilder sb = new StringBuilder(256);
+        sb.append("mes-processor failed: ")
+          .append(e.getClass().getSimpleName())
+          .append(": ")
+          .append(safeMsg(e));
+
+        if (debug) {
+            Throwable c = e.getCause();
+            int depth = 0;
+            while (c != null && depth++ < 5) {
+                sb.append("\n  caused by: ")
+                  .append(c.getClass().getSimpleName())
+                  .append(": ")
+                  .append(safeMsg(c));
+                c = c.getCause();
+            }
+        }
+
+        return sb.toString();
+    }
+
+    private String safeMsg(Throwable t) {
+        String m = t.getMessage();
+        return (m == null || m.isBlank()) ? "(no message)" : m;
+    }
+
+    private void note(String msg) {
+        print(Diagnostic.Kind.NOTE, msg);
+    }
+
+    private void error(String msg) {
+        print(Diagnostic.Kind.ERROR, msg);
+    }
+
+    private void print(Diagnostic.Kind kind, String msg) {
+        if (messager != null) {
+            messager.printMessage(kind, msg);
+        }
+    }
 }
