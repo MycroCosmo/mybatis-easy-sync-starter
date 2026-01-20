@@ -1,1 +1,2 @@
-rootProject.name = 'mybatis-easy-starter'
+rootProject.name = "mybatis-easy-sync-starter"
+include("mybatis-easy-core", "mybatis-easy-processor")
