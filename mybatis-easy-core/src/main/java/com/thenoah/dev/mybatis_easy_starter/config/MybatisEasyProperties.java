@@ -1,10 +1,10 @@
 package com.thenoah.dev.mybatis_easy_starter.config;
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
-
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "mybatis-easy")
 public class MybatisEasyProperties {
@@ -12,11 +12,16 @@ public class MybatisEasyProperties {
   private final AutoSql autoSql = new AutoSql();
   private final Generator generator = new Generator();
   private final Logging logging = new Logging();
+  private final Pagination pagination = new Pagination();
 
   public AutoSql getAutoSql() { return autoSql; }
   public Generator getGenerator() { return generator; }
   public Logging getLogging() { return logging; }
+  public Pagination getPagination() { return pagination; }
 
+  // ------------------------------------------------------------
+  // AutoSql
+  // ------------------------------------------------------------
   public static class AutoSql {
     /**
      * 운영 안전을 위해 기본 OFF 권장
@@ -65,13 +70,12 @@ public class MybatisEasyProperties {
       public void setKeyColumn(String keyColumn) { this.keyColumn = keyColumn; }
     }
 
-    public enum Strategy {
-      AUTO,
-      JDBC,
-      NONE
-    }
+    public enum Strategy { AUTO, JDBC, NONE }
   }
 
+  // ------------------------------------------------------------
+  // Generator
+  // ------------------------------------------------------------
   public static class Generator {
     private boolean enabled = false;
     private boolean useDbFolder = true;
@@ -101,9 +105,88 @@ public class MybatisEasyProperties {
     public void setDefaultModule(String defaultModule) { this.defaultModule = defaultModule; }
   }
 
+  // ------------------------------------------------------------
+  // Logging
+  // ------------------------------------------------------------
   public static class Logging {
     private boolean forceStdout = false;
+
     public boolean isForceStdout() { return forceStdout; }
     public void setForceStdout(boolean forceStdout) { this.forceStdout = forceStdout; }
+  }
+
+  // ------------------------------------------------------------
+  // Pagination
+  // ------------------------------------------------------------
+  public static class Pagination {
+
+    /**
+     * enabled=true 인 경우에만:
+     * - findPage SQL 생성
+     * - countAll SQL 생성
+     */
+    private boolean enabled = false;
+
+    /** AUTO / POSTGRES / MYSQL / MARIADB / ORACLE / SQLSERVER / H2 / SQLITE */
+    private Dialect dialect = Dialect.AUTO;
+
+    /** 과도한 size 방지 (findPage에서 clamp) */
+    private int maxPageSize = 200;
+
+    /**
+     * DB별 now() 함수 override (필요 시)
+     * 예: SQLServer에서 CURRENT_TIMESTAMP 대신 SYSUTCDATETIME() 강제
+     */
+    private String nowFunction;
+
+    /** findAll 정책 (열어두되 운영사고 줄이기) */
+    private final FindAll findAll = new FindAll();
+
+    /** findPage 기본 정렬 정책 */
+    private final DefaultOrder defaultOrder = new DefaultOrder();
+
+    public boolean isEnabled() { return enabled; }
+    public void setEnabled(boolean enabled) { this.enabled = enabled; }
+
+    public Dialect getDialect() { return dialect; }
+    public void setDialect(Dialect dialect) { this.dialect = dialect; }
+
+    public int getMaxPageSize() { return maxPageSize; }
+    public void setMaxPageSize(int maxPageSize) { this.maxPageSize = maxPageSize; }
+
+    public String getNowFunction() { return nowFunction; }
+    public void setNowFunction(String nowFunction) { this.nowFunction = nowFunction; }
+
+    public FindAll getFindAll() { return findAll; }
+    public DefaultOrder getDefaultOrder() { return defaultOrder; }
+
+    public enum Dialect { AUTO, POSTGRES, MYSQL, MARIADB, ORACLE, SQLSERVER, H2, SQLITE }
+
+    public static class FindAll {
+      private Policy policy = Policy.NONE; // NONE / CAP / DISABLE
+      private int cap = 1000;             // CAP일 때 최대 조회 수
+
+      public Policy getPolicy() { return policy; }
+      public void setPolicy(Policy policy) { this.policy = policy; }
+
+      public int getCap() { return cap; }
+      public void setCap(int cap) { this.cap = cap; }
+
+      public enum Policy { NONE, CAP, DISABLE }
+    }
+
+    public static class DefaultOrder {
+      private Mode mode = Mode.AUTO;                 // AUTO / CREATED_AT / UPDATED_AT / PK / NONE
+      private Direction direction = Direction.DESC;  // ASC / DESC
+
+      public Mode getMode() { return mode; }
+      public void setMode(Mode mode) { this.mode = mode; }
+
+      public Direction getDirection() { return direction; }
+      public void setDirection(Direction direction) { this.direction = direction; }
+
+      public enum Mode { AUTO, CREATED_AT, UPDATED_AT, PK, NONE }
+      public enum Direction { ASC, DESC }
+    }
   }
 }
