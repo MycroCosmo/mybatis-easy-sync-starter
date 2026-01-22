@@ -309,3 +309,321 @@ mybatis-easy:
 * ** 경고:** 로컬 소스 코드(src/main/java 등)를 직접 수정하므로, 운영 환경에서는 반드시 `false`로 설정하십시오.
 
 
+---
+
+## MES Processor (컴파일 타임 XML 검증/보조 생성)
+
+이 프로젝트에는 **컴파일 타임(Annotation Processor)** 에 동작하는 `mes-processor`가 포함되어 있습니다.  
+`@Mapper` 인터페이스와 Mapper XML을 스캔하여 다음을 수행합니다.
+
+- **Missing 검사:** Mapper 메서드는 있는데 XML에 id가 없는 경우 감지
+- **Orphan 검사:** XML에는 있는데 Mapper 메서드가 사라진 id 감지
+- **선택적 보조 생성:** missing id에 대해 XML에 stub 블록을 자동 추가(옵션)
+- **Orphan 주석 처리:** orphan id에 대해 statement 바로 위에 “ORPHAN” 주석 삽입(옵션)
+
+> 주의: processor는 **기존 XML을 통째로 생성/재정렬하지 않습니다.**  
+> 오직 `<!-- MES-AUTO-GENERATED:SECTION-BEGIN -->` ~ `<!-- MES-AUTO-GENERATED:SECTION-END -->`  
+> 구간만 안전하게 수정합니다.
+
+### 동작 정책
+
+- **flat-only 정책:** `mes.xmlDir` 바로 아래의 `*.xml`만 스캔합니다(하위 폴더 walk 없음)
+- **재현성 보장:** 파일/namespace/statement id 처리 순서를 고정하여 빌드 결과가 흔들리지 않도록 합니다
+- **안전한 파싱:** MyBatis XML의 `DOCTYPE` / 외부 엔티티 로딩을 차단하여 빌드 환경에 따른 파싱 실패를 줄입니다
+
+### Processor Options
+
+| 옵션 | 기본값 | 설명 |
+|---|---:|---|
+| `mes.xmlDir` | `src/main/resources/mapper` | Mapper XML 디렉터리 (flat-only) |
+| `mes.failOnMissing` | `true` | missing 발견 시 빌드 실패 처리 |
+| `mes.failOnOrphan` | `false` | orphan 발견 시 빌드 실패 처리 |
+| `mes.generateMissing` | `false` | missing stub 자동 생성/추가 |
+| `mes.debug` | `false` | 디버그 로그 출력 |
+
+### XML 자동 생성/수정 규칙
+
+- 섹션이 없으면 `</mapper>` 직전에 아래 마커를 자동 삽입합니다.
+  - `<!-- MES-AUTO-GENERATED:SECTION-BEGIN -->`
+  - `<!-- MES-AUTO-GENERATED:SECTION-END -->`
+- missing id는 **END 직전**에 stub로 append 됩니다.
+- orphan id는 해당 statement 시작 태그 라인 바로 위에 주석만 추가합니다.
+- 기존 statement의 내용/순서/서식은 가능한 한 유지합니다.
+
+## 📦 설치 및 설정 (JitPack)
+
+### Gradle
+```gradle
+### Gradle (Java)
+
+repositories {
+    maven { url 'https://jitpack.io' }
+}
+
+dependencies {
+    implementation 'com.github.MycroCosmo:mybatis-easy-starter:v1.0.0'
+
+    // MES Processor (compile-time)
+    annotationProcessor 'com.github.MycroCosmo:mybatis-easy-processor:v1.0.0'
+}
+
+```
+
+```build.gradle
+### MES Processor Options (build.gradle)
+
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += listOf(
+        "-Ames.xmlDir=src/main/resources/mapper",
+        "-Ames.failOnMissing=true",
+        "-Ames.failOnOrphan=false",
+        "-Ames.generateMissing=false",
+        "-Ames.debug=false"
+    )
+}
+
+```
+
+---
+
+## 📌 MES Processor 사용 예시
+
+### 1) 기본 상황: Mapper와 XML이 일치하는 경우 (정상)
+
+#### Mapper 인터페이스
+```java
+@Mapper
+public interface PostMapper {
+
+    Post findById(Long id);
+
+    void save(Post post);
+}
+```
+#### Mapper XML 
+```xml
+<mapper namespace="com.example.mapper.PostMapper">
+
+    <select id="findById" resultType="com.example.domain.Post">
+        SELECT * FROM post WHERE id = #{id}
+    </select>
+
+    <insert id="save">
+        INSERT INTO post(title, content) VALUES(#{title}, #{content})
+    </insert>
+</mapper>
+```
+
+#### 결과:
+- `missing = {}`
+- `orphan = {}`
+- 빌드 통과, XML 수정 없음
+
+---
+
+### 2) Missing 발생 예시 (Mapper에 있는데 XML에 없음)
+#### Mapper 인터페이스
+``` java
+@Mapper
+public interface PostMapper {
+
+    Post findById(Long id);
+
+    void save(Post post);
+
+    void deleteById(Long id);   // 새로 추가된 메서드
+}
+```
+#### 기존 XML (아직 수정 안 됨)
+``` xml
+<mapper namespace="com.example.mapper.PostMapper">
+
+    <select id="findById" resultType="com.example.domain.Post">
+        SELECT * FROM post WHERE id = #{id}
+    </select>
+
+    <insert id="save">
+        INSERT INTO post(title, content) VALUES(#{title}, #{content})
+    </insert>
+
+</mapper>
+```
+
+#### 빌드 로그 (기본 설정)
+``` markdown
+WARNING: MES missing:
+- com.example.mapper.PostMapper
+  * deleteById
+
+```
+
+#### 옵션 mes.generateMissing=true 설정 시 자동으로 XML에 추가됨
+``` xml
+<mapper namespace="com.example.mapper.PostMapper">
+
+    <select id="findById" resultType="com.example.domain.Post">
+        SELECT * FROM post WHERE id = #{id}
+    </select>
+
+    <insert id="save">
+        INSERT INTO post(title, content) VALUES(#{title}, #{content})
+    </insert>
+
+    <!-- MES-AUTO-GENERATED:SECTION-BEGIN -->
+
+        <delete id="deleteById">
+          /* TODO: write SQL */
+        </delete>
+
+    <!-- MES-AUTO-GENERATED:SECTION-END -->
+
+</mapper>
+```
+
+#### 특징
+- 기존 쿼리는 건드리지 않음
+- 자동 생성은 반드시 MES 섹션 내부에서만 수행
+
+---
+### 3) Orphan 발생 예시 (XML에는 있는데 Mapper에 없음)
+
+#### Mapper (메서드 삭제됨)
+``` java
+@Mapper
+public interface PostMapper {
+
+    Post findById(Long id);
+}
+```
+
+#### 기존 XML
+``` xml
+<mapper namespace="com.example.mapper.PostMapper">
+
+    <select id="findById" resultType="com.example.domain.Post">
+        SELECT * FROM post WHERE id = #{id}
+    </select>
+
+    <delete id="deleteById">
+        DELETE FROM post WHERE id = #{id}
+    </delete>
+
+</mapper>
+```
+
+#### 빌드 로그
+
+``` markdown
+WARNING: MES orphan:
+- com.example.mapper.PostMapper
+  * deleteById
+```
+
+#### `mes.generateMissing=true` + orphan 존재 시 자동 주석 삽입
+
+``` xml
+
+<mapper namespace="com.example.mapper.PostMapper">
+
+    <select id="findById" resultType="com.example.domain.Post">
+        SELECT * FROM post WHERE id = #{id}
+    </select>
+
+    <!-- MES-ORPHAN: id=deleteById no longer exists in mapper interface -->
+    <delete id="deleteById">
+        DELETE FROM post WHERE id = #{id}
+    </delete>
+
+</mapper>
+
+```
+
+#### 정책
+
+ - orphan은 절대 삭제하지 않음
+ - "대신 “이 메서드는 더 이상 Mapper에 없다"는 명확한 주석 힌트 제공
+
+---
+### 4) Missing + Orphan이 동시에 존재하는 경우
+#### Mapper
+``` java
+@Mapper
+public interface PostMapper {
+
+    Post findById(Long id);
+
+    void save(Post post);      // 추가됨
+}
+```
+
+#### 기존 XML
+``` xml
+<mapper namespace="com.example.mapper.PostMapper">
+
+    <select id="findById" resultType="com.example.domain.Post">
+        SELECT * FROM post WHERE id = #{id}
+    </select>
+
+    <delete id="deleteById">
+        DELETE FROM post WHERE id = #{id}
+    </delete>
+
+</mapper>
+
+```
+
+#### 자동 처리 결과 (`mes.generateMissing=true`)
+
+``` xml
+
+<mapper namespace="com.example.mapper.PostMapper">
+
+    <select id="findById" resultType="com.example.domain.Post">
+        SELECT * FROM post WHERE id = #{id}
+    </select>
+
+    <!-- MES-AUTO-GENERATED:SECTION-BEGIN -->
+
+        <insert id="save">
+          /* TODO: write SQL */
+        </insert>
+
+    <!-- MES-AUTO-GENERATED:SECTION-END -->
+
+    <!-- MES-ORPHAN: id=deleteById no longer exists in mapper interface -->
+    <delete id="deleteById">
+        DELETE FROM post WHERE id = #{id}
+    </delete>
+
+</mapper>
+```
+
+#### 요점
+- missing → 섹션 내부에 stub 추가
+- orphan → 기존 위치에 주석 추가
+- 두 작업은 서로 충돌하지 않음
+
+---
+### 5) 빌드 옵션 권장 세팅 (실전용)
+
+``` gradle
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += [
+        "-Ames.xmlDir=src/main/resources/mapper",
+        "-Ames.failOnMissing=true",
+        "-Ames.failOnOrphan=false",
+        "-Ames.generateMissing=true",
+        "-Ames.debug=false"
+    ]
+}
+
+```
+
+#### 권장 조합
+
+| 환경    | failOnMissing | failOnOrphan | generateMissing |
+| ----- | ------------- | ------------ | --------------- |
+| 개발 초기 | true          | false        | true            |
+| 일반 개발 | true          | false        | false           |
+| CI    | true          | true         | false           |
+
