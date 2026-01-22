@@ -26,8 +26,25 @@ public interface BaseMapper<T, ID> {
 
     /**
      * 모든 데이터를 조회합니다. (가상 XML의 id="findAll"와 매핑)
+     * - 권장하지 않는 메서드 (대신 findPage 사용 권장)
      */
     List<T> findAll();
+
+    /**
+     * Slice 스타일 페이징 (COUNT 없이 데이터만 조회)
+     * 가상 XML의 id="findPage"와 매핑
+     *
+     * @param offset 시작 위치 (0부터)
+     * @param limit  페이지 크기
+     */
+    List<T> findPage(@Param("offset") long offset,
+                     @Param("limit") int limit);
+
+    /**
+     * 전체 건수 조회 (Page 스타일이 필요할 때만 사용)
+     * 가상 XML의 id="countAll"와 매핑
+     */
+    long countAll();
 
     /**
      * ID를 기반으로 데이터를 삭제합니다. (가상 XML의 id="deleteById"와 매핑)

@@ -56,11 +56,9 @@ public class MybatisEasyAutoConfiguration {
     this.env = env;
   }
 
-  // namespace="..." 또는 namespace='...' 지원
   private static final Pattern NAMESPACE_PATTERN =
       Pattern.compile("<mapper[^>]*\\snamespace\\s*=\\s*([\"'])([^\"']+)\\1[^>]*>", Pattern.CASE_INSENSITIVE);
 
-  // </mapper> 대소문자/공백 변형 대응
   private static final Pattern CLOSING_MAPPER_PATTERN =
       Pattern.compile("</mapper\\s*>", Pattern.CASE_INSENSITIVE);
 
@@ -86,7 +84,6 @@ public class MybatisEasyAutoConfiguration {
     return configuration -> {
       configuration.addInterceptor(interceptor);
 
-      // ✅ 강제 설정 제거 (사용자 MyBatis 정책 침범 방지)
       // configuration.setMapUnderscoreToCamelCase(true);
 
       if (props.getLogging().isForceStdout()) {
@@ -107,11 +104,6 @@ public class MybatisEasyAutoConfiguration {
     return new Object();
   }
 
-  /**
-   * AutoSql: 기본 OFF
-   * - application.yml에서 mybatis-easy.autosql.enabled=true 일 때만 켜짐
-   * - + props.getAutoSql().enabled도 true여야 동작
-   */
   @Bean
   @ConditionalOnClass(SqlSessionFactoryBeanCustomizer.class)
   @ConditionalOnProperty(name = PROP_AUTOSQL_ENABLED, havingValue = "true", matchIfMissing = false)
@@ -126,7 +118,6 @@ public class MybatisEasyAutoConfiguration {
       Resource[] mapperResources = resolveMapperResources();
       if (mapperResources.length == 0) return;
 
-      // ✅ 매퍼마다 커넥션 오픈 방지: 1회 조회/캐시
       final String dbProductName = resolveDbProductName();
 
       List<Resource> virtualResources = new ArrayList<>(mapperResources.length);
@@ -141,7 +132,6 @@ public class MybatisEasyAutoConfiguration {
         try (InputStream is = res.getInputStream()) {
           String xml = new String(is.readAllBytes(), StandardCharsets.UTF_8);
 
-          // 재삽입 방지
           if (xml.contains(MYBATIS_EASY_MARKER) || xml.contains(MYBATIS_EASY_MARKER_END)) {
             virtualResources.add(res);
             continue;
@@ -234,11 +224,6 @@ public class MybatisEasyAutoConfiguration {
     }
   }
 
-  /**
-   * ✅ 중복 제거 + 안정적 순서(정렬)
-   * - Resource.getDescription() 기준으로 중복 제거
-   * - description 기준 정렬(빌드/환경에 따른 비결정성 완화)
-   */
   private Resource[] dedupAndSort(Resource[] resources) {
     if (resources == null || resources.length == 0) return new Resource[0];
 
@@ -261,9 +246,6 @@ public class MybatisEasyAutoConfiguration {
     return m.group(2);
   }
 
-  /**
-   * ✅ </mapper> 정규식 기반으로 마지막 closing 태그 직전에 삽입
-   */
   private String injectBeforeClosingMapper(String xml, String payload) {
     if (xml == null) return null;
 
@@ -298,7 +280,8 @@ public class MybatisEasyAutoConfiguration {
       Class<?> entityClass = resolveEntityType(mapperClass);
       if (entityClass == null) return "";
 
-      return AutoSqlBuilder.build(entityClass, xmlContent, props.getAutoSql(), dbProductName);
+      return AutoSqlBuilder.build(entityClass, xmlContent, props, dbProductName);
+
     } catch (ClassNotFoundException e) {
       log.debug("MyBatis-Easy: namespace is not a class: {}", namespace);
       return "";
