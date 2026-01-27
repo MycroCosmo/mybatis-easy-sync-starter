@@ -7,6 +7,8 @@ import com.thenoah.dev.mybatis_easy_starter.support.naming.NamingStrategy;
 import com.thenoah.dev.mybatis_easy_starter.support.naming.NamingStrategyHolder;
 import com.thenoah.dev.mybatis_easy_starter.tool.generator.AutoSqlBuilder;
 import com.thenoah.dev.mybatis_easy_starter.tool.generator.EntityGenerator;
+import com.thenoah.dev.mybatis_easy_starter.support.ColumnAnalyzer;
+import com.thenoah.dev.mybatis_easy_starter.support.EntityParser;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.mybatis.spring.SqlSessionFactoryBean;
 import org.mybatis.spring.boot.autoconfigure.ConfigurationCustomizer;
@@ -14,6 +16,7 @@ import org.mybatis.spring.boot.autoconfigure.SqlSessionFactoryBeanCustomizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.BeanFactory;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurationPackages;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -32,6 +35,8 @@ import java.io.InputStream;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.util.*;
 import java.util.regex.Matcher;
@@ -70,6 +75,11 @@ public class MybatisEasyAutoConfiguration {
   private static final String MYBATIS_EASY_MARKER_END =
       "  <!-- MyBatis-Easy: AUTO CRUD END -->\n";
 
+  // marker block replace regex (keep begin/end lines)
+  private static final Pattern AUTOCRUD_BLOCK_PATTERN = Pattern.compile(
+      "(?s)\\Q" + MYBATIS_EASY_MARKER.trim() + "\\E\\s*.*?\\s*\\Q" + MYBATIS_EASY_MARKER_END.trim() + "\\E"
+  );
+
   @Bean
   public ParameterMappingInterceptor parameterMappingInterceptor() {
     return new ParameterMappingInterceptor();
@@ -83,8 +93,6 @@ public class MybatisEasyAutoConfiguration {
   ) {
     return configuration -> {
       configuration.addInterceptor(interceptor);
-
-      // configuration.setMapUnderscoreToCamelCase(true);
 
       if (props.getLogging().isForceStdout()) {
         configuration.setLogImpl(org.apache.ibatis.logging.stdout.StdOutImpl.class);
@@ -105,6 +113,24 @@ public class MybatisEasyAutoConfiguration {
   }
 
   @Bean
+  public DisposableBean namingStrategyHolderResetter() {
+    return NamingStrategyHolder::resetToDefault;
+  }
+
+  /**
+   * 컨텍스트 종료 시 캐시 정리
+   * - NamingStrategyHolder는 전역 상태를 가질 수 있으므로
+   *   재시작/테스트/다중 컨텍스트에서 캐시 오염을 줄이기 위해 clear.
+   */
+  @Bean
+  public DisposableBean mybatisEasyCachesResetter() {
+    return () -> {
+      try { ColumnAnalyzer.clearCache(); } catch (Exception ignored) {}
+      try { EntityParser.clearCache(); } catch (Exception ignored) {}
+    };
+  }
+
+  @Bean
   @ConditionalOnClass(SqlSessionFactoryBeanCustomizer.class)
   @ConditionalOnProperty(name = PROP_AUTOSQL_ENABLED, havingValue = "true", matchIfMissing = false)
   public SqlSessionFactoryBeanCustomizer mybatisEasySqlSessionFactoryBeanCustomizer(MybatisEasyProperties props) {
@@ -121,6 +147,7 @@ public class MybatisEasyAutoConfiguration {
       final String dbProductName = resolveDbProductName();
 
       List<Resource> virtualResources = new ArrayList<>(mapperResources.length);
+      MybatisEasyProperties.AutoSql.RefreshMode refreshMode = props.getAutoSql().getRefreshMode();
 
       for (Resource res : mapperResources) {
         String filename = res.getFilename();
@@ -132,11 +159,6 @@ public class MybatisEasyAutoConfiguration {
         try (InputStream is = res.getInputStream()) {
           String xml = new String(is.readAllBytes(), StandardCharsets.UTF_8);
 
-          if (xml.contains(MYBATIS_EASY_MARKER) || xml.contains(MYBATIS_EASY_MARKER_END)) {
-            virtualResources.add(res);
-            continue;
-          }
-
           String namespace = extractNamespace(xml);
           if (namespace == null || namespace.isBlank()) {
             virtualResources.add(res);
@@ -144,18 +166,35 @@ public class MybatisEasyAutoConfiguration {
           }
 
           String autoSql = generateAutoSqlByNamespace(namespace, xml, props, dbProductName);
-
           if (autoSql == null || autoSql.isBlank()) {
             virtualResources.add(res);
             continue;
           }
 
-          String merged = injectBeforeClosingMapper(xml, MYBATIS_EASY_MARKER + autoSql + MYBATIS_EASY_MARKER_END);
-          if (merged == null) {
-            log.warn("MyBatis-Easy: could not inject auto sql (closing </mapper> not found). file={} ns={}",
-                res.getDescription(), namespace);
-            virtualResources.add(res);
-            continue;
+          boolean hasMarkers = xml.contains(MYBATIS_EASY_MARKER.trim()) || xml.contains(MYBATIS_EASY_MARKER_END.trim());
+
+          String merged;
+          if (hasMarkers) {
+            if (refreshMode == MybatisEasyProperties.AutoSql.RefreshMode.UPDATE_MARKER_BLOCK) {
+              merged = replaceMarkerBlock(xml, MYBATIS_EASY_MARKER, autoSql, MYBATIS_EASY_MARKER_END);
+              if (merged == null) {
+                log.warn("MyBatis-Easy: refresh-mode=UPDATE_MARKER_BLOCK but marker block replace failed. file={} ns={}",
+                    res.getDescription(), namespace);
+                virtualResources.add(res);
+                continue;
+              }
+            } else {
+              virtualResources.add(res);
+              continue;
+            }
+          } else {
+            merged = injectBeforeClosingMapper(xml, MYBATIS_EASY_MARKER + autoSql + MYBATIS_EASY_MARKER_END);
+            if (merged == null) {
+              log.warn("MyBatis-Easy: could not inject auto sql (closing </mapper> not found). file={} ns={}",
+                  res.getDescription(), namespace);
+              virtualResources.add(res);
+              continue;
+            }
           }
 
           virtualResources.add(new ByteArrayResource(
@@ -172,11 +211,39 @@ public class MybatisEasyAutoConfiguration {
       log.info("MyBatis-Easy: mapper xml virtual merge applied. count={}", virtualResources.size());
     };
   }
+  
+  @Bean
+  public DisposableBean mybatisEasyGlobalStateResetter() {
+    return () -> {
+      NamingStrategyHolder.resetToDefault();
+      ColumnAnalyzer.clearCache();
+      EntityParser.clearCache();
+    };
+  }
 
   @Bean
   @ConditionalOnProperty(name = PROP_GENERATOR_ENABLED, havingValue = "true")
   public EntityGenerator entityGenerator(DataSource dataSource, MybatisEasyProperties props) {
     MybatisEasyProperties.Generator g = props.getGenerator();
+
+    boolean allowWrite = g.isAllowWrite();
+    boolean isDevEnv = isClearlyDevEnvironment(env);
+
+    if (!g.isEnabled()) {
+      log.warn("MyBatis-Easy: generator.enabled=false (props). skip generation.");
+      return new EntityGenerator();
+    }
+
+    if (!allowWrite) {
+      log.warn("MyBatis-Easy: generator.allow-write=false. File write is blocked (local dev only).");
+      return new EntityGenerator();
+    }
+
+    if (!isDevEnv) {
+      log.warn("MyBatis-Easy: generator.allow-write=true but environment is NOT recognized as dev. " +
+          "Blocked. (need active profile 'local' OR .git under user.dir)");
+      return new EntityGenerator();
+    }
 
     boolean useDbFolder = g.isUseDbFolder();
     boolean enableTablePackage = g.isEnableTablePackage();
@@ -197,6 +264,26 @@ public class MybatisEasyAutoConfiguration {
     );
 
     return generator;
+  }
+
+  private boolean isClearlyDevEnvironment(Environment env) {
+    try {
+      if (env != null) {
+        for (String p : env.getActiveProfiles()) {
+          if ("local".equalsIgnoreCase(p)) return true;
+        }
+      }
+    } catch (Exception ignored) { }
+
+    try {
+      String userDir = System.getProperty("user.dir");
+      if (userDir != null && !userDir.isBlank()) {
+        Path git = Path.of(userDir).resolve(".git");
+        return Files.exists(git) && Files.isDirectory(git);
+      }
+    } catch (Exception ignored) { }
+
+    return false;
   }
 
   private Resource[] resolveMapperResources() {
@@ -265,6 +352,19 @@ public class MybatisEasyAutoConfiguration {
     return sb.toString();
   }
 
+  private String replaceMarkerBlock(String xml, String beginMarker, String newBody, String endMarker) {
+    if (xml == null || xml.isBlank()) return null;
+    String begin = beginMarker.trim();
+    String end = endMarker.trim();
+    if (!xml.contains(begin) || !xml.contains(end)) return null;
+
+    Matcher m = AUTOCRUD_BLOCK_PATTERN.matcher(xml);
+    if (!m.find()) return null;
+
+    String replacement = beginMarker + newBody + endMarker;
+    return xml.substring(0, m.start()) + replacement + xml.substring(m.end());
+  }
+
   private String generateAutoSqlByNamespace(String namespace,
                                             String xmlContent,
                                             MybatisEasyProperties props,
@@ -303,17 +403,41 @@ public class MybatisEasyAutoConfiguration {
     }
   }
 
+  // ==========================================================
+  // (중요 수정) BaseMapper<T,ID>의 T를 "상속/중첩 인터페이스"까지 재귀로 탐색
+  // ==========================================================
   private Class<?> resolveEntityType(Class<?> mapperClass) {
-    for (Type t : mapperClass.getGenericInterfaces()) {
-      if (!(t instanceof ParameterizedType pt)) continue;
-      Type raw = pt.getRawType();
-      if (!(raw instanceof Class<?> rawClass)) continue;
+    return resolveEntityTypeRecursive(mapperClass, new HashSet<>());
+  }
 
-      if (BaseMapper.class.isAssignableFrom(rawClass)) {
-        Type arg0 = pt.getActualTypeArguments()[0];
-        if (arg0 instanceof Class<?> c) return c;
+  private Class<?> resolveEntityTypeRecursive(Class<?> type, Set<Class<?>> visited) {
+    if (type == null || !visited.add(type)) return null;
+
+    for (Type gi : type.getGenericInterfaces()) {
+      Class<?> found = resolveFromType(gi);
+      if (found != null) return found;
+
+      if (gi instanceof Class<?> c) {
+        Class<?> rec = resolveEntityTypeRecursive(c, visited);
+        if (rec != null) return rec;
+      } else if (gi instanceof ParameterizedType pt && pt.getRawType() instanceof Class<?> raw) {
+        Class<?> rec = resolveEntityTypeRecursive(raw, visited);
+        if (rec != null) return rec;
       }
     }
-    return null;
+
+    return resolveEntityTypeRecursive(type.getSuperclass(), visited);
+  }
+
+  private Class<?> resolveFromType(Type t) {
+    if (!(t instanceof ParameterizedType pt)) return null;
+
+    Type raw = pt.getRawType();
+    if (!(raw instanceof Class<?> rawClass)) return null;
+
+    if (!BaseMapper.class.isAssignableFrom(rawClass)) return null;
+
+    Type arg0 = pt.getActualTypeArguments()[0];
+    return (arg0 instanceof Class<?> c) ? c : null;
   }
 }

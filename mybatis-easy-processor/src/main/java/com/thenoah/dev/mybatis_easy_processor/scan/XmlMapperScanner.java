@@ -92,7 +92,7 @@ public class XmlMapperScanner {
     }
 
     /**
-     * ✅ 상대경로 xmlDir을 “프로젝트 루트” 기준으로 고정해서 해석
+     * 상대경로 xmlDir을 “프로젝트 루트” 기준으로 고정해서 해석
      * - user.dir에서 위로 올라가며 settings.gradle(.kts) / build.gradle(.kts) / pom.xml을 찾음
      * - 찾으면 그 디렉터리를 루트로 확정하고 xmlDir을 resolve
      * - 못 찾으면 user.dir 기준(최후의 수단)

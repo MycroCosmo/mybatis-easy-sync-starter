@@ -1,18 +1,33 @@
 package com.thenoah.dev.mybatis_easy_starter.tool.generator;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.sql.*;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
+import java.sql.Types;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+
+import javax.sql.DataSource;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class EntityGenerator {
 
@@ -26,7 +41,7 @@ public class EntityGenerator {
     private static final String TYPE_MISMATCH_PREFIX = "// [Type Mismatch] DB type:";
     private static final double RENAME_SCORE_THRESHOLD = 0.62;
 
-    // ✅ Added 필드를 고정 영역에만 관리
+    // Added 필드를 고정 영역에만 관리
     private static final String ADDED_BLOCK_BEGIN = "    // MyBatis-Easy: ADDED FIELDS BEGIN";
     private static final String ADDED_BLOCK_END   = "    // MyBatis-Easy: ADDED FIELDS END";
 
@@ -61,6 +76,13 @@ public class EntityGenerator {
         Objects.requireNonNull(dataSource, "dataSource must not be null");
         if (basePackage == null || basePackage.isBlank()) {
             log.warn("MyBatis-Easy: basePackage is empty. Skip generation.");
+            return;
+        }
+
+        // === additional internal safety gate (defense in depth) ===
+        if (!isClearlyDevProject()) {
+            log.warn("MyBatis-Easy: generator blocked (EntityGenerator defense). " +
+                    "Need active dev project marker (.git under user.dir) to proceed.");
             return;
         }
 
@@ -123,6 +145,17 @@ public class EntityGenerator {
 
         } catch (Exception e) {
             log.error("MyBatis-Easy: Generation failed", e);
+        }
+    }
+
+    private boolean isClearlyDevProject() {
+        try {
+            String userDir = System.getProperty("user.dir");
+            if (userDir == null || userDir.isBlank()) return false;
+            Path git = Path.of(userDir).resolve(".git");
+            return Files.exists(git) && Files.isDirectory(git);
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -210,7 +243,7 @@ public class EntityGenerator {
             sb.append("    private ").append(javaType).append(" ").append(fieldName).append(";\n\n");
         }
 
-        // ✅ Added 블록 기본 생성
+        // Added 블록 기본 생성
         sb.append(ADDED_BLOCK_BEGIN).append("\n");
         sb.append(ADDED_BLOCK_END).append("\n\n");
 
@@ -267,7 +300,7 @@ public class EntityGenerator {
 
         boolean changed = false;
 
-        // (1) deleted/renamed 마킹 (✅ 중복 누적 방지: 기존 마커 제거 후 1회만 삽입)
+        // (1) deleted/renamed 마킹
         for (String fieldName : deletedCandidates) {
             String fieldType = localFieldMap.get(fieldName);
             if (fieldType == null) continue;
@@ -300,7 +333,7 @@ public class EntityGenerator {
             }
         }
 
-        // (2) 타입 불일치 마킹 (기존 마커 제거 후 1회만 삽입)
+        // (2) 타입 불일치 마킹
         for (String dbFieldName : dbFieldNames) {
             if (!localFieldMap.containsKey(dbFieldName)) continue;
 
@@ -320,7 +353,7 @@ public class EntityGenerator {
             }
         }
 
-        // (3) ✅ Added 필드는 고정 블록 내부에만 추가
+        // Added 필드는 고정 블록 내부에만 추가
         if (!effectiveAdded.isEmpty()) {
             String updated = upsertAddedFieldsBlock(content, effectiveAdded, dbFieldTypes);
             if (!updated.equals(content)) {
@@ -335,9 +368,6 @@ public class EntityGenerator {
         log.info("MyBatis-Easy: Synced [{}] (Added/TypeCheck/DeletedCheck/RenameHint)", javaFilePath.toAbsolutePath());
     }
 
-    /**
-     * 특정 targetLine 바로 위에 같은 prefix 마커가 있으면 제거(누적 방지)
-     */
     private String removeMarkerDirectlyAbove(String content, String targetLine, String markerPrefix) {
         if (content == null || content.isBlank()) return content;
         if (targetLine == null || targetLine.isBlank()) return content;
@@ -348,16 +378,12 @@ public class EntityGenerator {
         Pattern p = Pattern.compile(regex);
         Matcher m = p.matcher(content);
         if (m.find()) {
-            // markerLine + targetLine 을 targetLine만 남기도록 축약
             String replacement = "    " + targetLine;
             return content.substring(0, m.start()) + replacement + content.substring(m.end());
         }
         return content;
     }
 
-    /**
-     * Added fields는 블록 내부에서만 관리한다.
-     */
     private String upsertAddedFieldsBlock(String content,
                                          Set<String> effectiveAdded,
                                          Map<String, String> dbFieldTypes) {
@@ -399,10 +425,6 @@ public class EntityGenerator {
         String block = "\n" + ADDED_BLOCK_BEGIN + "\n" + fields + ADDED_BLOCK_END + "\n";
         return content.substring(0, lastBrace).trim() + block + "}\n";
     }
-
-    // -----------------------------
-    // rename detect
-    // -----------------------------
 
     private Map<String, String> detectRenamePairs(Set<String> deletedCandidates,
                                                  Set<String> addedCandidates,
@@ -627,4 +649,5 @@ public class EntityGenerator {
             this.javaType = javaType;
         }
     }
+
 }

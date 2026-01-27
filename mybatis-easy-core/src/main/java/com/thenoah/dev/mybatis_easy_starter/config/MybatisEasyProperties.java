@@ -29,14 +29,35 @@ public class MybatisEasyProperties {
      */
     private boolean enabled = false;
 
+    /**
+     * XML에 마커 블록이 이미 있을 때의 갱신 정책
+     * NONE: 마커 있으면 기존처럼 스킵
+     * UPDATE_MARKER_BLOCK: 마커 블록 내부를 항상 최신 엔티티 구조로 교체
+     */
+    private RefreshMode refreshMode = RefreshMode.NONE;
+
+    /**
+     * 예약어/특수문자 대응을 위한 identifier quoting
+     * true면 dialect에 따라 table/column에 quote 적용
+     */
+    private boolean quoteIdentifiers = false;
+
     private final Update update = new Update();
     private final GeneratedKey generatedKey = new GeneratedKey();
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
+    public RefreshMode getRefreshMode() { return refreshMode; }
+    public void setRefreshMode(RefreshMode refreshMode) { this.refreshMode = refreshMode; }
+
+    public boolean isQuoteIdentifiers() { return quoteIdentifiers; }
+    public void setQuoteIdentifiers(boolean quoteIdentifiers) { this.quoteIdentifiers = quoteIdentifiers; }
+
     public Update getUpdate() { return update; }
     public GeneratedKey getGeneratedKey() { return generatedKey; }
+
+    public enum RefreshMode { NONE, UPDATE_MARKER_BLOCK }
 
     public static class Update {
       /**
@@ -78,6 +99,13 @@ public class MybatisEasyProperties {
   // ------------------------------------------------------------
   public static class Generator {
     private boolean enabled = false;
+
+    /**
+     * 2중 스위치: enabled=true + allowWrite=true에서만 파일 쓰기 허용
+     * 기본 false
+     */
+    private boolean allowWrite = false;
+
     private boolean useDbFolder = true;
     private boolean enableTablePackage = false;
 
@@ -88,6 +116,9 @@ public class MybatisEasyProperties {
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
+
+    public boolean isAllowWrite() { return allowWrite; }
+    public void setAllowWrite(boolean allowWrite) { this.allowWrite = allowWrite; }
 
     public boolean isUseDbFolder() { return useDbFolder; }
     public void setUseDbFolder(boolean useDbFolder) { this.useDbFolder = useDbFolder; }
