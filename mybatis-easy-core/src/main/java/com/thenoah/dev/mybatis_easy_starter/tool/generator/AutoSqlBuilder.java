@@ -4,8 +4,6 @@ import com.thenoah.dev.mybatis_easy_starter.config.MybatisEasyProperties;
 import com.thenoah.dev.mybatis_easy_starter.core.annotation.Id;
 import com.thenoah.dev.mybatis_easy_starter.core.annotation.SoftDelete;
 import com.thenoah.dev.mybatis_easy_starter.support.ColumnAnalyzer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
 import java.util.*;
@@ -13,8 +11,6 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class AutoSqlBuilder {
-
-  private static final Logger log = LoggerFactory.getLogger(AutoSqlBuilder.class);
 
   private static final Pattern ID_INSERT =
       Pattern.compile("<insert\\b[^>]*\\bid\\s*=\\s*([\"'])insert\\1", Pattern.CASE_INSENSITIVE);
@@ -152,8 +148,11 @@ public class AutoSqlBuilder {
 
       return sql.toString();
     } catch (Exception e) {
-      log.error("AutoSqlBuilder failed", e);
-      return "";
+      throw new IllegalStateException(
+          "Failed to generate MyBatis SQL for " +
+              (entityClass == null ? "<null>" : entityClass.getName()),
+          e
+      );
     }
   }
 
@@ -413,18 +412,19 @@ public class AutoSqlBuilder {
 
     StringBuilder sb = new StringBuilder();
     sb.append("  <select id=\"findPage\" resultType=\"").append(resultTypeName).append("\">\n")
-      .append("    <bind name=\"__limit\" value=\"limit > ").append(max).append(" ? ").append(max).append(" : limit\"/>\n");
+      .append("    <bind name=\"__offset\" value=\"offset &lt; 0 ? 0 : offset\"/>\n")
+      .append("    <bind name=\"__limit\" value=\"limit &lt; 1 ? 1 : (limit > ").append(max).append(" ? ").append(max).append(" : limit)\"/>\n");
 
     switch (dialect) {
       case MYSQL, MARIADB -> {
         sb.append(baseSelect);
         sb.append(orderBy);
-        sb.append("    LIMIT #{__limit} OFFSET #{offset}\n");
+        sb.append("    LIMIT #{__limit} OFFSET #{__offset}\n");
       }
       case SQLSERVER -> {
         sb.append(baseSelect);
         sb.append(orderBy);
-        sb.append("    OFFSET #{offset} ROWS FETCH NEXT #{__limit} ROWS ONLY\n");
+        sb.append("    OFFSET #{__offset} ROWS FETCH NEXT #{__limit} ROWS ONLY\n");
       }
       case ORACLE -> {
         sb.append("    SELECT ").append(selectColumns).append(" FROM (\n")
@@ -432,15 +432,15 @@ public class AutoSqlBuilder {
             .append(baseSelect)
             .append(orderBy)
             .append("      ) inner_q\n")
-            .append("      WHERE ROWNUM <= (#{offset} + #{__limit})\n")
+            .append("      WHERE ROWNUM <= (#{__offset} + #{__limit})\n")
             .append("    )\n")
-            .append("    WHERE rn > #{offset}\n");
+            .append("    WHERE rn > #{__offset}\n");
       }
       case POSTGRES, H2, SQLITE, UNKNOWN -> {
         // ANSI SQL:2008 페이징 (UNKNOWN 포함)
         sb.append(baseSelect);
         sb.append(orderBy);
-        sb.append("    OFFSET #{offset} ROWS FETCH NEXT #{__limit} ROWS ONLY\n");
+        sb.append("    OFFSET #{__offset} ROWS FETCH NEXT #{__limit} ROWS ONLY\n");
       }
     }
 
