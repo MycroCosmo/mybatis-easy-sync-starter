@@ -18,17 +18,17 @@ MyBatis 프로젝트를 진행하면서 다음 문제가 반복됐습니다.
 
 ## 구성
 
-### \`mybatis-easy-core\`
+### `mybatis-easy-core`
 
 실행 시점에 공통 MyBatis 기능을 제공합니다.
 
-- \`BaseMapper<T, ID>\` 기반 기본 CRUD 제공
+- `BaseMapper<T, ID>` 기반 기본 CRUD 제공
 - 사용자가 작성한 XML statement가 있으면 자동 생성 SQL보다 우선
-- \`@Table\`, \`@Id\`, \`@Column\`, \`@SoftDelete\` 기반 매핑
-- \`NamingStrategy\`를 통한 camelCase ↔ snake_case 대응
+- `@Table`, `@Id`, `@Column`, `@SoftDelete` 기반 매핑
+- `NamingStrategy`를 통한 camelCase ↔ snake_case 대응
 - JDBC metadata 기반 개발용 EntityGenerator
 
-### \`mybatis-easy-processor\`
+### `mybatis-easy-processor`
 
 Java Annotation Processor로 Mapper 인터페이스와 XML을 비교합니다.
 
@@ -67,7 +67,7 @@ DB 컬럼 추가는 비교적 안전하지만 삭제, 타입 변경, 이름 변�
 
 ## 사용 예시
 
-\`\`\`java
+```java
 @Table(name = "users")
 public class User {
 
@@ -80,19 +80,19 @@ public class User {
     @SoftDelete
     private LocalDateTime deletedAt;
 }
-\`\`\`
+```
 
-\`\`\`java
+```java
 @Mapper
 public interface UserMapper extends BaseMapper<User, Long> {
     // 기본 CRUD는 자동 제공
     // 커스텀 SQL이 필요한 경우 기존 MyBatis XML 사용
 }
-\`\`\`
+```
 
 ## BaseMapper
 
-\`\`\`java
+```java
 int insert(Object entity);
 Optional<T> findById(ID id);
 List<T> findAll();
@@ -100,17 +100,17 @@ List<T> findPage(long offset, int limit);
 long countAll();
 int update(Object entity);
 int deleteById(ID id);
-\`\`\`
+```
 
 ## Processor 설정
 
-\`\`\`text
+```text
 -Ames.xmlDir=src/main/resources/mapper
 -Ames.failOnMissing=true
 -Ames.failOnOrphan=false
 -Ames.generateMissing=false
 -Ames.debug=false
-\`\`\`
+```
 
 기본 정책은 보수적으로 설정했습니다.
 
@@ -121,7 +121,7 @@ int deleteById(ID id);
 
 ## 프로젝트 구조
 
-\`\`\`text
+```text
 mybatis-easy-sync-starter/
 ├── mybatis-easy-core/
 │   ├── core/annotation
@@ -133,7 +133,7 @@ mybatis-easy-sync-starter/
     ├── validate
     ├── generate
     └── util
-\`\`\`
+```
 
 ## 빌드
 
@@ -142,9 +142,9 @@ mybatis-easy-sync-starter/
 - Java 17+
 - Gradle
 
-\`\`\`bash
+```bash
 ./gradlew clean test
-\`\`\`
+```
 
 ## 범위
 
