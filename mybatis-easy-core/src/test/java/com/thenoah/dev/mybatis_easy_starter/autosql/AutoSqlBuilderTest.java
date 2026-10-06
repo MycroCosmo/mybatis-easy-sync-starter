@@ -119,4 +119,36 @@ class AutoSqlBuilderTest {
 
         assertThat(sql).doesNotContain("id=\"findById\"").contains("id=\"insert\"");
     }
+
+    @Test
+    void statementsInsideXmlCommentsAreNotTreatedAsUserDefined() {
+        String userXml = "<mapper namespace=\"x\"><!-- <select id=\"findAll\"></select> --></mapper>";
+
+        String sql = AutoSqlBuilder.build(Member.class, userXml, props(), "postgresql");
+
+        assertThat(sql).contains("id=\"findAll\"");
+    }
+
+    @Test
+    void previouslyGeneratedMarkerBlockIsNotTreatedAsUserDefined() {
+        String generated = AutoSqlBuilder.build(Member.class, "", props(), "postgresql");
+        String userXml = "<mapper namespace=\"x\">\n"
+                + "  <!-- MyBatis-Easy: AUTO CRUD BEGIN -->\n" + generated
+                + "  <!-- MyBatis-Easy: AUTO CRUD END -->\n</mapper>";
+
+        assertThat(AutoSqlBuilder.build(Member.class, userXml, props(), "postgresql")).isEqualTo(generated);
+    }
+
+    @Test
+    void userStatementOutsideMarkerBlockStillWins() {
+        String userXml = "<mapper namespace=\"x\">\n"
+                + "  <!-- MyBatis-Easy: AUTO CRUD BEGIN -->\n"
+                + "  <select id=\"findAll\"></select>\n"
+                + "  <!-- MyBatis-Easy: AUTO CRUD END -->\n"
+                + "  <select id=\"findById\"></select>\n</mapper>";
+
+        String sql = AutoSqlBuilder.build(Member.class, userXml, props(), "postgresql");
+
+        assertThat(sql).contains("id=\"findAll\"").doesNotContain("id=\"findById\"");
+    }
 }
