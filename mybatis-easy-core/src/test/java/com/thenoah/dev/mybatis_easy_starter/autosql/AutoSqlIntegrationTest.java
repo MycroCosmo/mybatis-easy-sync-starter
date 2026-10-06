@@ -1,15 +1,13 @@
 package com.thenoah.dev.mybatis_easy_starter.autosql;
 
 import org.junit.jupiter.api.Test;
-import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@SpringBootTest(properties = {
+@SpringBootTest(classes = TestApplication.class, properties = {
         "spring.datasource.url=jdbc:h2:mem:autosql;DB_CLOSE_DELAY=-1",
         "mybatis.mapper-locations=classpath*:mapper/**/*.xml",
         "mybatis-easy.autosql.enabled=true",
@@ -17,11 +15,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 @Transactional
 class AutoSqlIntegrationTest {
-
-    @SpringBootApplication
-    @MapperScan(basePackageClasses = MemberMapper.class)
-    static class TestApp {
-    }
 
     @Autowired
     MemberMapper mapper;

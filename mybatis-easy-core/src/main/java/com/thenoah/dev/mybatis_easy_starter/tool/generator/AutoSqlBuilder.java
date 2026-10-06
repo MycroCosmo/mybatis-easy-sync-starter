@@ -596,6 +596,7 @@ public class AutoSqlBuilder {
           .append("    UPDATE ").append(tableName).append("\n")
           .append("    SET ").append(sdCol).append(" = ").append(nowFn).append("\n")
           .append("    WHERE ").append(pkColumn).append(" = #{").append("id").append("}\n")
+          .append("    AND ").append(sdCol).append(" IS NULL\n")
           .append("  </update>\n\n");
     } else {
       sb.append("  <delete id=\"deleteById\">\n")
