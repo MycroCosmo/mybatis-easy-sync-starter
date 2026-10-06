@@ -13,7 +13,7 @@ MyBatis에서 반복되는 CRUD 작성과 Mapper/XML 불일치 확인을 돕는 
 
 ## 설치 — 로컬 Maven 저장소 기준
 
-JDK 17과 저장소에 포함된 Gradle Wrapper를 준비합니다. 현재 빌드 파일에서 core 버전은 `1.0.2`, processor 버전은 `1.0.0`으로 서로 다릅니다. 아래는 공개 패키지 저장소의 배포 성공을 전제하지 않는 로컬 설치 절차입니다.
+JDK 17과 저장소에 포함된 Gradle Wrapper를 준비합니다. core와 processor는 같은 버전(`1.0.3`)으로 함께 배포됩니다. 아래는 공개 패키지 저장소의 배포 성공을 전제하지 않는 로컬 설치 절차입니다.
 
 라이브러리 저장소 루트:
 
@@ -32,9 +32,9 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.thenoah.dev:mybatis-easy-core:1.0.2'
+    implementation 'com.thenoah.dev:mybatis-easy-core:1.0.3'
     // Mapper/XML 컴파일 시점 검증이 필요한 경우에만 추가
-    annotationProcessor 'com.thenoah.dev:mybatis-easy-processor:1.0.0'
+    annotationProcessor 'com.thenoah.dev:mybatis-easy-processor:1.0.3'
     runtimeOnly 'org.postgresql:postgresql'
 }
 ```
