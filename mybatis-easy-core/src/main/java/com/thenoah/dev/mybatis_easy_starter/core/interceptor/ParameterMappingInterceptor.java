@@ -1,9 +1,12 @@
 package com.thenoah.dev.mybatis_easy_starter.core.interceptor;
 
 import com.thenoah.dev.mybatis_easy_starter.core.mapper.BaseMapper;
+import com.thenoah.dev.mybatis_easy_starter.support.ColumnAnalyzer;
 import com.thenoah.dev.mybatis_easy_starter.support.EntityParser;
+import com.thenoah.dev.mybatis_easy_starter.support.MapperEntityResolver;
 import org.apache.ibatis.cache.CacheKey;
 import org.apache.ibatis.executor.Executor;
+import org.apache.ibatis.io.Resources;
 import org.apache.ibatis.mapping.BoundSql;
 import org.apache.ibatis.mapping.MappedStatement;
 import org.apache.ibatis.mapping.SqlCommandType;
@@ -34,8 +37,8 @@ public class ParameterMappingInterceptor implements Interceptor {
 
   private static final Logger log = LoggerFactory.getLogger(ParameterMappingInterceptor.class);
 
-  // mapperFQCN -> entityClass 캐시
-  private final Map<String, Class<?>> entityTypeCache = new ConcurrentHashMap<>();
+  // mapperFQCN -> entityClass 캐시 (미해결도 Optional.empty()로 캐시해 반복 탐색 방지)
+  private final Map<String, Optional<Class<?>>> entityTypeCache = new ConcurrentHashMap<>();
 
   // BaseMapper 자동 CRUD 메서드
   private static final Set<String> AUTO_CRUD_METHODS = Set.of(
@@ -71,7 +74,7 @@ public class ParameterMappingInterceptor implements Interceptor {
       return invocation.proceed();
     }
 
-    Class<?> entityClass = entityTypeCache.computeIfAbsent(mapperFqcn, this::resolveEntityTypeSafely);
+    Class<?> entityClass = entityTypeCache.computeIfAbsent(mapperFqcn, this::resolveEntityTypeSafely).orElse(null);
     if (entityClass == null) return invocation.proceed();
 
     // VO면 그대로
@@ -87,12 +90,13 @@ public class ParameterMappingInterceptor implements Interceptor {
     Object result = invocation.proceed();
 
     // best-effort write-back for generated key (INSERT only)
-    tryWriteBackGeneratedKey(ms, originalParam, convertedMap);
+    tryWriteBackGeneratedKey(ms, originalParam, convertedMap, entityClass);
 
     return result;
   }
 
-  private void tryWriteBackGeneratedKey(MappedStatement ms, Object originalParam, Map<String, Object> convertedMap) {
+  private void tryWriteBackGeneratedKey(MappedStatement ms, Object originalParam,
+                                        Map<String, Object> convertedMap, Class<?> entityClass) {
     if (ms == null || originalParam == null || convertedMap == null) return;
 
     if (ms.getSqlCommandType() != SqlCommandType.INSERT) return;
@@ -100,8 +104,7 @@ public class ParameterMappingInterceptor implements Interceptor {
     if (ms.getKeyGenerator() == null) return;
     // NoKeyGenerator 체크는 구현체 의존이 있어 생략해도 됨. (원하면 유지 가능)
 
-    String keyProp = resolveKeyProperty(ms);
-    if (keyProp == null || keyProp.isBlank()) keyProp = "id";
+    String keyProp = resolveKeyProperty(ms, entityClass);
 
     Object idVal = convertedMap.get(keyProp);
     if (idVal == null) {
@@ -119,12 +122,18 @@ public class ParameterMappingInterceptor implements Interceptor {
     }
   }
 
-  private String resolveKeyProperty(MappedStatement ms) {
+  /** keyProperty 우선, 없으면 엔티티의 PK 필드명, 그것도 없으면 "id" */
+  private String resolveKeyProperty(MappedStatement ms, Class<?> entityClass) {
     try {
       String[] keyProps = ms.getKeyProperties();
       if (keyProps != null && keyProps.length > 0 && keyProps[0] != null && !keyProps[0].isBlank()) {
         return keyProps[0];
       }
+    } catch (Exception ignored) { }
+
+    try {
+      String idField = ColumnAnalyzer.analyzeClass(entityClass).getIdField();
+      if (idField != null && !idField.isBlank()) return idField;
     } catch (Exception ignored) { }
     return "id";
   }
@@ -215,47 +224,14 @@ public class ParameterMappingInterceptor implements Interceptor {
     return value;
   }
 
-  private Class<?> resolveEntityTypeSafely(String mapperFqcn) {
+  private Optional<Class<?>> resolveEntityTypeSafely(String mapperFqcn) {
     try {
-      Class<?> mapper = Class.forName(mapperFqcn);
-      return resolveEntityTypeRecursive(mapper, new HashSet<>());
+      // MyBatis ClassLoaderWrapper: context/system classloader까지 순회 (devtools, war 등 대응)
+      Class<?> mapper = Resources.classForName(mapperFqcn);
+      return Optional.ofNullable(MapperEntityResolver.resolveEntityType(mapper));
     } catch (Exception e) {
-      return null;
+      return Optional.empty();
     }
-  }
-
-  // BaseMapper<T,ID>의 T를 재귀적으로 찾음
-  private Class<?> resolveEntityTypeRecursive(Class<?> type, Set<Class<?>> visited) {
-    if (type == null || !visited.add(type)) return null;
-
-    for (Type gi : type.getGenericInterfaces()) {
-      Class<?> found = resolveFromType(gi);
-      if (found != null) return found;
-
-      if (gi instanceof Class<?> c) {
-        Class<?> rec = resolveEntityTypeRecursive(c, visited);
-        if (rec != null) return rec;
-      } else if (gi instanceof ParameterizedType pt && pt.getRawType() instanceof Class<?> raw) {
-        Class<?> rec = resolveEntityTypeRecursive(raw, visited);
-        if (rec != null) return rec;
-      }
-    }
-
-    return resolveEntityTypeRecursive(type.getSuperclass(), visited);
-  }
-
-  private Class<?> resolveFromType(Type t) {
-    if (!(t instanceof ParameterizedType pt)) return null;
-
-    Type raw = pt.getRawType();
-    if (!(raw instanceof Class<?> rawClass)) return null;
-
-    if (!BaseMapper.class.isAssignableFrom(rawClass)) return null;
-
-    Type arg0 = pt.getActualTypeArguments()[0];
-    if (arg0 instanceof Class<?> c) return c;
-
-    return null;
   }
 
   private boolean isPrimitiveLike(Class<?> clazz) {
