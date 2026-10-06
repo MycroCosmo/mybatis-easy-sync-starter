@@ -389,14 +389,26 @@ public class MybatisEasyAutoConfiguration {
     }
   }
 
+  /**
+   * DB 제품명으로 SQL 방언을 추론한다. 연결에 실패하면 "unknown"(표준 SQL)으로 떨어지므로,
+   * 조용히 방언이 틀어지지 않도록 경고를 남긴다. (명시하려면 mybatis-easy.pagination.dialect)
+   */
   private String resolveDbProductName() {
     try {
       DataSource ds = applicationContext.getBean(DataSource.class);
       try (Connection c = ds.getConnection()) {
         String name = c.getMetaData().getDatabaseProductName();
-        return (name == null) ? "unknown" : name.toLowerCase(Locale.ROOT);
+        if (name == null || name.isBlank()) {
+          log.warn("MyBatis-Easy: could not detect DB product name. Falling back to standard SQL. "
+              + "Set mybatis-easy.pagination.dialect explicitly if needed.");
+          return "unknown";
+        }
+        log.info("MyBatis-Easy: detected database product={}", name);
+        return name.toLowerCase(Locale.ROOT);
       }
     } catch (Exception e) {
+      log.warn("MyBatis-Easy: could not detect database dialect ({}). Falling back to standard SQL. "
+          + "Set mybatis-easy.pagination.dialect explicitly if the DB is not reachable at startup.", e.toString());
       return "unknown";
     }
   }
