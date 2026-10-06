@@ -1,5 +1,7 @@
 # MyBatis Easy Sync Starter
 
+[English](README.en.md) · 한국어
+
 MyBatis에서 반복되는 CRUD 작성과 Mapper/XML 불일치 확인을 돕는 Java 17 기반 라이브러리입니다. 직접 작성한 SQL을 유지하면서 반복 작업만 자동화하는 것이 목표입니다.
 
 ## 모듈
@@ -113,7 +115,24 @@ public interface UserMapper extends BaseMapper<User, Long> {
 </mapper>
 ```
 
+XML 경로는 `mybatis.mapper-locations` 설정을 따르며, 설정이 없으면 `classpath*:mapper/**/*.xml`을 사용합니다.
+
 `namespace`는 실제 Mapper의 전체 클래스명과 일치해야 합니다. 자동 구성은 XML 리소스를 찾아 `BaseMapper`와 연결한 뒤 필요한 SQL을 가상 리소스에 병합합니다. 커스텀 statement를 XML에 작성하면 동일 ID의 자동 생성 SQL보다 우선합니다.
+
+## 주요 설정
+
+| 프로퍼티 | 기본값 | 설명 |
+| --- | --- | --- |
+| `mybatis-easy.autosql.enabled` | `false` | AutoSQL 병합 활성화 |
+| `mybatis-easy.autosql.refresh-mode` | `NONE` | `UPDATE_MARKER_BLOCK`이면 XML의 마커 블록 내부를 최신 엔티티 구조로 갱신 |
+| `mybatis-easy.autosql.quote-identifiers` | `false` | 방언에 맞춰 테이블·컬럼 식별자에 quote 적용 |
+| `mybatis-easy.autosql.generated-key.key-column` | `id` | 생성키 컬럼명. PK 컬럼이 `id`가 아니면(예: `member_id`) 지정 |
+| `mybatis-easy.autosql.generated-key.strategy` | `AUTO` | `JDBC`(useGeneratedKeys) / `NONE`. AUTO는 Oracle에서 `NONE` |
+| `mybatis-easy.pagination.enabled` | `false` | `true`일 때만 `findPage`/`countAll` SQL 생성 |
+| `mybatis-easy.pagination.dialect` | `AUTO` | DB 제품명으로 추론. 연결 불가 시 명시 권장 |
+| `mybatis-easy.pagination.find-all.policy` | `NONE` | `CAP`(상한 적용) / `DISABLE`(findAll 생성 안 함) |
+
+`findById`와 `deleteById`는 `@Param("id")`로 바인딩되므로 엔티티의 PK 필드명이 `id`가 아니어도 동작합니다.
 
 ## 제공 API
 
@@ -154,6 +173,13 @@ tasks.withType(JavaCompile).configureEach {
 ## 개발용 엔티티 생성기
 
 JDBC 메타데이터를 이용한 소스 생성기는 로컬 파일을 수정합니다. 현재 자동 구성은 `generator.enabled`, `generator.allow-write`, 개발 환경 판정을 함께 확인합니다. 운영에서는 비활성화하고, 로컬에서 켜더라도 생성 전후 Git diff를 검토하세요.
+
+## DB 지원 범위
+
+| DB | 상태 |
+| --- | --- |
+| H2 | 통합 테스트(실제 CRUD) 통과 |
+| PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite | 방언별 SQL 생성 문자열을 단위 테스트로 확인. **실제 DB 실행은 검증하지 않았으므로** 도입 전에 소비자 프로젝트에서 확인하세요. |
 
 ## 검증 범위
 
