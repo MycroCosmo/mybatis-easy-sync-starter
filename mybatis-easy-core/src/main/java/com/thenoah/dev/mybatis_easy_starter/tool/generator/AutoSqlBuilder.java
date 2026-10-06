@@ -31,6 +31,12 @@ public class AutoSqlBuilder {
   private static final Pattern ID_DELETE_BY_ID =
       Pattern.compile("<(delete|update)\\b[^>]*\\bid\\s*=\\s*([\"'])deleteById\\2", Pattern.CASE_INSENSITIVE);
 
+  /** 이전에 생성된 마커 블록(자동 생성 SQL)은 사용자 정의로 취급하지 않는다. */
+  private static final Pattern AUTO_CRUD_BLOCK = Pattern.compile(
+      "<!--\\s*MyBatis-Easy: AUTO CRUD BEGIN\\s*-->.*?<!--\\s*MyBatis-Easy: AUTO CRUD END\\s*-->",
+      Pattern.DOTALL);
+  private static final Pattern XML_COMMENT = Pattern.compile("<!--.*?-->", Pattern.DOTALL);
+
   /** fallback */
   private static final String DEFAULT_NOW_FUNCTION = "CURRENT_TIMESTAMP";
 
@@ -54,6 +60,7 @@ public class AutoSqlBuilder {
                              MybatisEasyProperties props,
                              String dbProductName) {
     try {
+      userXmlContent = stripNonUserContent(userXmlContent);
       ColumnAnalyzer.TableInfo tableInfo = ColumnAnalyzer.analyzeClass(entityClass);
 
       String rawTableName = tableInfo.getTableName();
@@ -155,6 +162,13 @@ public class AutoSqlBuilder {
       log.error("AutoSqlBuilder failed", e);
       return "";
     }
+  }
+
+  /** 사용자 정의 statement 판별용: 기존 자동 생성 블록과 XML 주석을 제거한다. */
+  private static String stripNonUserContent(String xml) {
+    if (xml == null || xml.isBlank()) return xml;
+    String withoutBlock = AUTO_CRUD_BLOCK.matcher(xml).replaceAll("");
+    return XML_COMMENT.matcher(withoutBlock).replaceAll("");
   }
 
   private static boolean exists(String xml, Pattern pattern) {
