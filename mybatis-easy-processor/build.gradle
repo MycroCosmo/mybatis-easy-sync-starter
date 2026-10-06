@@ -21,7 +21,16 @@ dependencies {
 
     // XML 파싱(원하는 걸로)
     implementation 'org.jsoup:jsoup:1.17.2'
+
+    testImplementation project(':mybatis-easy-core')
+    testImplementation 'com.google.testing.compile:compile-testing:0.21.0'
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.assertj:assertj-core:3.26.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
+
+tasks.named('test') { useJUnitPlatform() }
 
 publishing {
     publications {

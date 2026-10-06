@@ -105,7 +105,7 @@ public final class MesProcessor extends AbstractProcessor {
                 return true;
             }
 
-            var scan = mapperScanner.scan(collectedMappers);
+            var scan = mapperScanner.scan(collectedMappers, processingEnv.getElementUtils());
 
             if (debug) {
                 note("MES scanned namespaces=" + scan.expected().size());
@@ -127,7 +127,7 @@ public final class MesProcessor extends AbstractProcessor {
             var expected = scan.expected();
             var xmlIndex = xmlScanner.scan();
 
-            DiffResult diff = MapperXmlValidator.diff(expected, xmlIndex);
+            DiffResult diff = MapperXmlValidator.diff(expected, scan.provided(), xmlIndex);
 
             if (debug) {
                 note("MES diff: missingNamespaces=" + diff.missing().size()

@@ -133,6 +133,10 @@ int deleteById(ID id);
 
 Processor는 missing statement, orphan statement, XML ID와 충돌하는 메서드 오버로딩을 검사합니다.
 
+- `mes.xmlDir` 아래 하위 디렉터리의 XML도 함께 검사합니다.
+- `BaseMapper`에서 상속한 메서드는 런타임에 AutoSQL이 제공하므로 XML에 없어도 missing이 아니며, XML에 직접 정의해도 orphan으로 보지 않습니다.
+- Mapper가 직접 선언하거나 다른 인터페이스에서 상속한 메서드는 XML statement가 있어야 합니다. `@Select` 등 애너테이션 SQL 메서드는 제외됩니다.
+
 ```groovy
 tasks.withType(JavaCompile).configureEach {
     options.compilerArgs += [
