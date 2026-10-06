@@ -3,8 +3,7 @@ plugins {
     id 'maven-publish'
 }
 
-group = 'com.thenoah.dev'
-version = '1.0.0'
+// group/version은 루트 build.gradle의 allprojects 설정을 따른다 (core와 항상 동일 버전)
 
 java {
     toolchain {
