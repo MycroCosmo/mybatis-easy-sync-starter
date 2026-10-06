@@ -1,6 +1,6 @@
 plugins {
     id 'java-library'
-    id 'maven-publish'
+    id 'com.vanniktech.maven.publish' version '0.34.0'
     id 'io.spring.dependency-management'
 }
 
@@ -28,7 +28,10 @@ dependencies {
 
 tasks.named('test') { useJUnitPlatform() }
 
-publishing {
-    publications { mavenJava(MavenPublication) { from components.java } }
-    repositories { mavenLocal() }
+mavenPublishing {
+    coordinates(project.group.toString(), 'mybatis-easy-core', project.version.toString())
+    pom {
+        name = 'MyBatis Easy Core'
+        description = 'Runtime CRUD SQL merging, field/column mapping and a development-time entity generator for MyBatis on Spring Boot.'
+    }
 }

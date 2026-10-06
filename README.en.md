@@ -34,12 +34,14 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.thenoah.dev:mybatis-easy-core:1.0.3'
+    implementation 'io.github.mycrocosmo:mybatis-easy-core:1.0.3'
     // only if you want compile-time Mapper/XML validation
-    annotationProcessor 'com.thenoah.dev:mybatis-easy-processor:1.0.3'
+    annotationProcessor 'io.github.mycrocosmo:mybatis-easy-processor:1.0.3'
     runtimeOnly 'org.postgresql:postgresql'
 }
 ```
+
+The Maven `groupId` is `io.github.mycrocosmo`; Java packages stay `com.thenoah.dev...` (imports are unchanged).
 
 The consuming project is expected to use Spring Boot 3.x and Java 17, plus the JDBC driver and DataSource configuration of your database.
 

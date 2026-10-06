@@ -1,0 +1,42 @@
+name: Release
+
+# v1.0.3 같은 태그를 푸시하면 Maven Central(Central Portal)에 업로드한다.
+# 업로드 후 Portal(https://central.sonatype.com)에서 검증 결과를 확인하고 직접 Publish 한다.
+# 필요한 시크릿과 절차는 RELEASING.md 참고.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify tag matches project version
+        run: |
+          VERSION=$(grep -E "^\s*version = '" build.gradle | head -1 | sed -E "s/.*'([^']+)'.*/\1/")
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match build.gradle version v$VERSION"
+            exit 1
+          fi
+
+      - name: Build and test
+        run: ./gradlew build --no-daemon
+
+      - name: Upload to Maven Central
+        run: ./gradlew publishToMavenCentral --no-daemon --no-configuration-cache
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.SIGNING_KEY_ID }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
