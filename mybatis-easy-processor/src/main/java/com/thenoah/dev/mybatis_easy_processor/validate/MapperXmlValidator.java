@@ -11,8 +11,19 @@ public final class MapperXmlValidator {
 
     public static DiffResult diff(Map<String, Set<String>> expected,
                                   XmlMapperScanner.XmlIndex xmlIndex) {
+        return diff(expected, Map.of(), xmlIndex);
+    }
+
+    /**
+     * @param provided namespace -> 런타임에 자동 제공되는 id(BaseMapper). missing 판정에는 쓰이지 않고,
+     *                 XML에 직접 정의돼 있어도 orphan으로 보지 않는다.
+     */
+    public static DiffResult diff(Map<String, Set<String>> expected,
+                                  Map<String, Set<String>> provided,
+                                  XmlMapperScanner.XmlIndex xmlIndex) {
 
         if (expected == null) expected = Map.of();
+        if (provided == null) provided = Map.of();
 
         Map<String, Set<String>> missing = new LinkedHashMap<>();
         Map<String, Set<String>> orphan  = new LinkedHashMap<>();
@@ -50,14 +61,11 @@ public final class MapperXmlValidator {
             if (actIds.isEmpty()) continue;
 
             Set<String> expIds = expected.getOrDefault(ns, Set.of());
-            if (expIds.isEmpty()) {
-                // 전부 orphan
-                orphan.put(ns, unmodifiableSortedSet(actIds));
-                continue;
-            }
+            Set<String> provIds = provided.getOrDefault(ns, Set.of());
 
             Set<String> orp = new LinkedHashSet<>(actIds);
             orp.removeAll(expIds);
+            orp.removeAll(provIds);
 
             if (!orp.isEmpty()) {
                 orphan.put(ns, unmodifiableSortedSet(orp));

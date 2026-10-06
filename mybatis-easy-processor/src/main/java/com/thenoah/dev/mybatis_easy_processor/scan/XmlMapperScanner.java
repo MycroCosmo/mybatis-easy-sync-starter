@@ -6,6 +6,7 @@ import com.thenoah.dev.mybatis_easy_processor.util.XmlParser;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 
 public class XmlMapperScanner {
 
@@ -25,16 +26,16 @@ public class XmlMapperScanner {
             return new XmlIndex(root, nsToPath, nsToIds);
         }
 
-        // flat-only 정책: xmlDir 바로 아래 *.xml만 읽는다.
+        // 런타임(mapper/**/*.xml)과 동일하게 하위 디렉터리까지 재귀 탐색
         List<Path> xmlFiles = new ArrayList<>();
-        try (DirectoryStream<Path> ds = Files.newDirectoryStream(root, "*.xml")) {
-            for (Path p : ds) {
-                if (Files.isRegularFile(p)) xmlFiles.add(p);
-            }
+        try (Stream<Path> walk = Files.walk(root)) {
+            walk.filter(Files::isRegularFile)
+                .filter(p -> p.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".xml"))
+                .forEach(xmlFiles::add);
         }
 
-        // 재현성: 파일명 기준 정렬
-        xmlFiles.sort(Comparator.comparing(Path::getFileName));
+        // 재현성: 상대 경로 기준 정렬
+        xmlFiles.sort(Comparator.comparing(p -> root.relativize(p).toString()));
 
         for (Path p : xmlFiles) {
             final XmlParser.ParsedXml parsed;
