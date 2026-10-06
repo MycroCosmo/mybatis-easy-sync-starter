@@ -302,6 +302,7 @@ public class AutoSqlBuilder {
         .collect(Collectors.joining(" or "));
   }
 
+  /** findById/deleteById는 BaseMapper의 @Param("id")에 바인딩되므로 PK 필드명과 무관하게 #{id}를 사용한다. */
   private static String buildFindById(String tableName,
                                       String selectColumns,
                                       String pkColumn,
@@ -313,7 +314,7 @@ public class AutoSqlBuilder {
 
     sb.append("  <select id=\"findById\" resultType=\"").append(resultTypeName).append("\">\n")
         .append("    SELECT ").append(selectColumns).append(" FROM ").append(tableName).append("\n")
-        .append("    WHERE ").append(pkColumn).append(" = #{").append(pkProperty).append("}\n");
+        .append("    WHERE ").append(pkColumn).append(" = #{").append("id").append("}\n");
 
     if (softDeleteField != null) {
       String sdCol = quoter.column(ColumnAnalyzer.getColumnName(softDeleteField));
@@ -594,12 +595,12 @@ public class AutoSqlBuilder {
       sb.append("  <update id=\"deleteById\">\n")
           .append("    UPDATE ").append(tableName).append("\n")
           .append("    SET ").append(sdCol).append(" = ").append(nowFn).append("\n")
-          .append("    WHERE ").append(pkColumn).append(" = #{").append(pkProperty).append("}\n")
+          .append("    WHERE ").append(pkColumn).append(" = #{").append("id").append("}\n")
           .append("  </update>\n\n");
     } else {
       sb.append("  <delete id=\"deleteById\">\n")
           .append("    DELETE FROM ").append(tableName).append("\n")
-          .append("    WHERE ").append(pkColumn).append(" = #{").append(pkProperty).append("}\n")
+          .append("    WHERE ").append(pkColumn).append(" = #{").append("id").append("}\n")
           .append("  </delete>\n\n");
     }
 
