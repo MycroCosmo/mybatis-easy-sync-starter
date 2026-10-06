@@ -9,6 +9,7 @@ import com.thenoah.dev.mybatis_easy_starter.tool.generator.AutoSqlBuilder;
 import com.thenoah.dev.mybatis_easy_starter.tool.generator.EntityGenerator;
 import com.thenoah.dev.mybatis_easy_starter.support.ColumnAnalyzer;
 import com.thenoah.dev.mybatis_easy_starter.support.EntityParser;
+import com.thenoah.dev.mybatis_easy_starter.support.MapperEntityResolver;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.mybatis.spring.SqlSessionFactoryBean;
 import org.mybatis.spring.boot.autoconfigure.ConfigurationCustomizer;
@@ -34,8 +35,6 @@ import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 
 import javax.sql.DataSource;
 import java.io.InputStream;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -114,24 +113,6 @@ public class MybatisEasyAutoConfiguration {
   public Object namingStrategyHolderInitializer(NamingStrategy namingStrategy) {
     NamingStrategyHolder.set(namingStrategy);
     return new Object();
-  }
-
-  @Bean
-  public DisposableBean namingStrategyHolderResetter() {
-    return NamingStrategyHolder::resetToDefault;
-  }
-
-  /**
-   * 컨텍스트 종료 시 캐시 정리
-   * - NamingStrategyHolder는 전역 상태를 가질 수 있으므로
-   *   재시작/테스트/다중 컨텍스트에서 캐시 오염을 줄이기 위해 clear.
-   */
-  @Bean
-  public DisposableBean mybatisEasyCachesResetter() {
-    return () -> {
-      try { ColumnAnalyzer.clearCache(); } catch (Exception ignored) {}
-      try { EntityParser.clearCache(); } catch (Exception ignored) {}
-    };
   }
 
   @Bean
@@ -218,6 +199,10 @@ public class MybatisEasyAutoConfiguration {
     };
   }
   
+  /**
+   * 컨텍스트 종료 시 전역 상태 정리
+   * - NamingStrategyHolder/캐시는 static이므로 재시작/테스트/다중 컨텍스트에서의 오염을 줄이기 위해 reset.
+   */
   @Bean
   public DisposableBean mybatisEasyGlobalStateResetter() {
     return () -> {
@@ -390,7 +375,7 @@ public class MybatisEasyAutoConfiguration {
         return "";
       }
 
-      Class<?> entityClass = resolveEntityType(mapperClass);
+      Class<?> entityClass = MapperEntityResolver.resolveEntityType(mapperClass);
       if (entityClass == null) return "";
 
       return AutoSqlBuilder.build(entityClass, xmlContent, props, dbProductName);
@@ -414,43 +399,5 @@ public class MybatisEasyAutoConfiguration {
     } catch (Exception e) {
       return "unknown";
     }
-  }
-
-  // ==========================================================
-  // (중요 수정) BaseMapper<T,ID>의 T를 "상속/중첩 인터페이스"까지 재귀로 탐색
-  // ==========================================================
-  private Class<?> resolveEntityType(Class<?> mapperClass) {
-    return resolveEntityTypeRecursive(mapperClass, new HashSet<>());
-  }
-
-  private Class<?> resolveEntityTypeRecursive(Class<?> type, Set<Class<?>> visited) {
-    if (type == null || !visited.add(type)) return null;
-
-    for (Type gi : type.getGenericInterfaces()) {
-      Class<?> found = resolveFromType(gi);
-      if (found != null) return found;
-
-      if (gi instanceof Class<?> c) {
-        Class<?> rec = resolveEntityTypeRecursive(c, visited);
-        if (rec != null) return rec;
-      } else if (gi instanceof ParameterizedType pt && pt.getRawType() instanceof Class<?> raw) {
-        Class<?> rec = resolveEntityTypeRecursive(raw, visited);
-        if (rec != null) return rec;
-      }
-    }
-
-    return resolveEntityTypeRecursive(type.getSuperclass(), visited);
-  }
-
-  private Class<?> resolveFromType(Type t) {
-    if (!(t instanceof ParameterizedType pt)) return null;
-
-    Type raw = pt.getRawType();
-    if (!(raw instanceof Class<?> rawClass)) return null;
-
-    if (!BaseMapper.class.isAssignableFrom(rawClass)) return null;
-
-    Type arg0 = pt.getActualTypeArguments()[0];
-    return (arg0 instanceof Class<?> c) ? c : null;
   }
 }
