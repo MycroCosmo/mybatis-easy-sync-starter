@@ -12,11 +12,13 @@ import com.thenoah.dev.mybatis_easy_starter.support.EntityParser;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.mybatis.spring.SqlSessionFactoryBean;
 import org.mybatis.spring.boot.autoconfigure.ConfigurationCustomizer;
+import org.mybatis.spring.boot.autoconfigure.MybatisProperties;
 import org.mybatis.spring.boot.autoconfigure.SqlSessionFactoryBeanCustomizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.DisposableBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurationPackages;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -66,6 +68,8 @@ public class MybatisEasyAutoConfiguration {
 
   private static final Pattern CLOSING_MAPPER_PATTERN =
       Pattern.compile("</mapper\\s*>", Pattern.CASE_INSENSITIVE);
+
+  private static final String DEFAULT_MAPPER_LOCATION = "classpath*:mapper/**/*.xml";
 
   private static final String PROP_AUTOSQL_ENABLED = "mybatis-easy.autosql.enabled";
   private static final String PROP_GENERATOR_ENABLED = "mybatis-easy.generator.enabled";
@@ -133,7 +137,9 @@ public class MybatisEasyAutoConfiguration {
   @Bean
   @ConditionalOnClass(SqlSessionFactoryBeanCustomizer.class)
   @ConditionalOnProperty(name = PROP_AUTOSQL_ENABLED, havingValue = "true", matchIfMissing = false)
-  public SqlSessionFactoryBeanCustomizer mybatisEasySqlSessionFactoryBeanCustomizer(MybatisEasyProperties props) {
+  public SqlSessionFactoryBeanCustomizer mybatisEasySqlSessionFactoryBeanCustomizer(
+      MybatisEasyProperties props,
+      ObjectProvider<MybatisProperties> mybatisProperties) {
     return factoryBean -> {
 
       if (!props.getAutoSql().isEnabled()) {
@@ -141,7 +147,7 @@ public class MybatisEasyAutoConfiguration {
         return;
       }
 
-      Resource[] mapperResources = resolveMapperResources();
+      Resource[] mapperResources = resolveMapperResources(mybatisProperties.getIfAvailable());
       if (mapperResources.length == 0) return;
 
       final String dbProductName = resolveDbProductName();
@@ -286,12 +292,19 @@ public class MybatisEasyAutoConfiguration {
     return false;
   }
 
-  private Resource[] resolveMapperResources() {
+  /**
+   * mybatis.mapper-locations가 설정되어 있으면 그 경로를, 없으면 기본 경로를 사용한다.
+   * (병합 후 factoryBean.setMapperLocations로 덮어쓰므로 사용자 경로를 반드시 포함해야 한다)
+   */
+  private Resource[] resolveMapperResources(MybatisProperties mybatisProperties) {
     try {
       PathMatchingResourcePatternResolver resolver =
           new PathMatchingResourcePatternResolver(applicationContext.getClassLoader());
 
-      Resource[] a = resolver.getResources("classpath*:mapper/**/*.xml");
+      Resource[] a = (mybatisProperties != null) ? mybatisProperties.resolveMapperLocations() : new Resource[0];
+      if (a.length == 0) {
+        a = resolver.getResources(DEFAULT_MAPPER_LOCATION);
+      }
 
       boolean includeGenerated = env.getProperty("mybatis-easy.mapper.include-generated", Boolean.class, false);
       if (!includeGenerated) {
