@@ -3,7 +3,7 @@ plugins {
 }
 
 allprojects {
-    group = 'com.thenoah.dev'
+    group = 'io.github.mycrocosmo'
     version = '1.0.3'
 
     repositories {
@@ -14,5 +14,44 @@ allprojects {
 subprojects {
     tasks.withType(JavaCompile).configureEach {
         options.encoding = "UTF-8"
+    }
+}
+
+// ---- 공통 배포 설정 (Maven Central / Central Portal) ----
+subprojects {
+    plugins.withId('com.vanniktech.maven.publish') {
+        mavenPublishing {
+            // 업로드와 릴리스는 태그 워크플로(.github/workflows/release.yml)에서 수행한다.
+            publishToMavenCentral()
+
+            // 서명 키가 있을 때만 서명한다 (로컬 publishToMavenLocal은 키 없이 동작)
+            if (project.hasProperty('signingInMemoryKey')) {
+                signAllPublications()
+            }
+
+            pom {
+                url = 'https://github.com/MycroCosmo/mybatis-easy-sync-starter'
+                inceptionYear = '2026'
+                licenses {
+                    license {
+                        name = 'The MIT License'
+                        url = 'https://opensource.org/licenses/MIT'
+                        distribution = 'repo'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'MycroCosmo'
+                        name = 'sunghwan kwon'
+                        url = 'https://github.com/MycroCosmo'
+                    }
+                }
+                scm {
+                    url = 'https://github.com/MycroCosmo/mybatis-easy-sync-starter'
+                    connection = 'scm:git:git://github.com/MycroCosmo/mybatis-easy-sync-starter.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/MycroCosmo/mybatis-easy-sync-starter.git'
+                }
+            }
+        }
     }
 }

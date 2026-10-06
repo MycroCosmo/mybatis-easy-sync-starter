@@ -1,6 +1,6 @@
 plugins {
     id 'java-library'
-    id 'maven-publish'
+    id 'com.vanniktech.maven.publish' version '0.34.0'
 }
 
 // group/version은 루트 build.gradle의 allprojects 설정을 따른다 (core와 항상 동일 버전)
@@ -31,13 +31,10 @@ dependencies {
 
 tasks.named('test') { useJUnitPlatform() }
 
-publishing {
-    publications {
-        mavenJava(MavenPublication) {
-            from components.java
-        }
-    }
-    repositories {
-        mavenLocal()
+mavenPublishing {
+    coordinates(project.group.toString(), 'mybatis-easy-processor', project.version.toString())
+    pom {
+        name = 'MyBatis Easy Processor'
+        description = 'Annotation processor that compares MyBatis Mapper methods with XML statement IDs at compile time.'
     }
 }

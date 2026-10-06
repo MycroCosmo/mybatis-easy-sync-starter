@@ -34,12 +34,14 @@ repositories {
 }
 
 dependencies {
-    implementation 'com.thenoah.dev:mybatis-easy-core:1.0.3'
+    implementation 'io.github.mycrocosmo:mybatis-easy-core:1.0.3'
     // Mapper/XML 컴파일 시점 검증이 필요한 경우에만 추가
-    annotationProcessor 'com.thenoah.dev:mybatis-easy-processor:1.0.3'
+    annotationProcessor 'io.github.mycrocosmo:mybatis-easy-processor:1.0.3'
     runtimeOnly 'org.postgresql:postgresql'
 }
 ```
+
+Maven 좌표의 groupId는 `io.github.mycrocosmo`이고, Java 패키지는 `com.thenoah.dev...` 그대로입니다(코드의 import는 바뀌지 않습니다).
 
 소비자 프로젝트는 Spring Boot 3.x와 Java 17 환경을 기준으로 구성합니다. 사용하는 DB의 JDBC 드라이버와 DataSource 설정도 필요합니다.
 
